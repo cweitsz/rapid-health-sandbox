@@ -22,7 +22,7 @@ export default function HomePage() {
               Start / Manage Dossiers
             </Link>
 
-            <Link href="/sprints/sprint-a" style={secondaryBtn}>
+            <Link href="/sprints" style={secondaryBtn}>
               Explore the Sprints
             </Link>
 
