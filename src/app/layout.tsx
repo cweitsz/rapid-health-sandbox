@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import DossierGate from "@/components/DossierGate";
 import PrivacyBanner from "@/components/PrivacyBanner";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -29,21 +30,10 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <PrivacyBanner />
-
         <Suspense fallback={null}>
-          <DossierGate />
-
-          <div
-            style={{
-              maxWidth: 980,
-              margin: "0 auto",
-              padding: 24,
-              fontFamily: "system-ui",
-            }}
-          >
-            {children}
-          </div>
+          <DossierGate>{children}</DossierGate>
         </Suspense>
+        <SpeedInsights />
       </body>
     </html>
   );
