@@ -169,6 +169,11 @@ export default function IntakePage() {
     return withDossier(`/steps/${step}`, activeId);
   }, [activeId, dossier]);
 
+  // NEW: Home link that preserves dossier context when possible
+  const homeHref = useMemo(() => {
+    return activeId ? withDossier("/", activeId) : "/";
+  }, [activeId]);
+
   function onCreateNew() {
     try {
       const d = createDossier();
@@ -283,6 +288,13 @@ export default function IntakePage() {
 
   return (
     <main style={pageWrap}>
+      {/* NEW: Home link so the landing page isn’t a dead end */}
+        <div style={{ marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Link href={homeHref} style={homeBtnStyle}>
+                ← Back to Home
+            </Link>
+        </div>
+
       <h1 style={{ fontSize: 32, fontWeight: 900, margin: 0 }}>Dossier intake</h1>
       <p style={{ marginTop: 8, maxWidth: 760, lineHeight: 1.5 }}>
         Create a project or resume work you have already started.
@@ -480,6 +492,17 @@ const pageWrap: React.CSSProperties = {
   margin: "0 auto",
   width: "100%",
   boxSizing: "border-box",
+};
+
+const homeBtnStyle: React.CSSProperties = {
+  display: "inline-block",
+  padding: "10px 14px",
+  borderRadius: 12,
+  border: "1px solid #111",
+  fontWeight: 900,
+  textDecoration: "none",
+  background: "#111",
+  color: "#fff",
 };
 
 function Section(props: { title: string; children: React.ReactNode }) {

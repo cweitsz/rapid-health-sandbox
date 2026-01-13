@@ -2,7 +2,6 @@
 
 function isDossierBoundPath(path: string): boolean {
   return (
-    path === "/" ||
     path.startsWith("/steps/") ||
     path.startsWith("/sprints/") ||
     path === "/review" ||
@@ -10,10 +9,17 @@ function isDossierBoundPath(path: string): boolean {
   );
 }
 
+function isDossierNeutralPath(path: string): boolean {
+  // Routes that should NEVER get ?d=
+  return path === "/" || path === "/intake";
+}
+
 /**
  * Add ?d=<dossierId> to an internal href, preserving existing query + hash.
  * - If dossierId is falsy, returns href unchanged.
  * - Leaves external URLs, special schemes, and hash-only links unchanged.
+ * - IMPORTANT: "/" and "/intake" are dossier-neutral and will never receive ?d=.
+ *   If they already have d, we strip it.
  *
  * DEV tripwire:
  * - Warn if called for a dossier-bound route without a dossierId.
@@ -28,8 +34,7 @@ export function withDossier(href: string, dossierId?: string | null): string {
     if (!h) {
       console.warn("[withDossier] called with empty href");
     }
-    // If it's an internal-looking dossier route and there's no dossierId, scream.
-    // (We check this before external/scheme checks because you *want* the warning.)
+
     const hashIdx0 = h.indexOf("#");
     const beforeHash0 = hashIdx0 >= 0 ? h.slice(0, hashIdx0) : h;
     const qIdx0 = beforeHash0.indexOf("?");
@@ -47,8 +52,6 @@ export function withDossier(href: string, dossierId?: string | null): string {
   }
   // --- end dev tripwires ---
 
-  const d = (dossierId ?? "").trim();
-  if (!d) return href;
   if (!h) return href;
 
   // Don't touch hash-only anchors
@@ -69,6 +72,20 @@ export function withDossier(href: string, dossierId?: string | null): string {
   const qIdx = beforeHash.indexOf("?");
   const path = qIdx >= 0 ? beforeHash.slice(0, qIdx) : beforeHash;
   const query = qIdx >= 0 ? beforeHash.slice(qIdx + 1) : "";
+
+  // "/" and "/intake" are dossier-neutral: never append d; also strip it if present
+  if (isDossierNeutralPath(path)) {
+    if (!query) return `${path}${hashPart}`;
+
+    const params = new URLSearchParams(query);
+    params.delete("d");
+
+    const qs = params.toString();
+    return qs ? `${path}?${qs}${hashPart}` : `${path}${hashPart}`;
+  }
+
+  const d = (dossierId ?? "").trim();
+  if (!d) return href;
 
   const params = new URLSearchParams(query);
   params.set("d", d);

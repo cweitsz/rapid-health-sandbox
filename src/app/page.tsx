@@ -1,5 +1,4 @@
 import Link from "next/link";
-import HomeCtas from "@/components/HomeCtas";
 
 export default function HomePage() {
   return (
@@ -16,11 +15,22 @@ export default function HomePage() {
           <li>If you want to build something that makes meaningful change, you need to start with a real problem.</li>
         </ul>
 
-        {/* New CTAs: Intake + Resume + Privacy */}
+        {/* CTAs: all in one row */}
         <div style={{ marginTop: 16 }}>
-          <HomeCtas />
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <Link href="/intake" style={primaryBtn}>
+              Start / Manage Dossiers
+            </Link>
+
+            <Link href="/sprints/sprint-a" style={secondaryBtn}>
+              Explore the Sprints
+            </Link>
+
+            <Link href="/privacy" style={secondaryBtn}>
+              Read our Privacy Statement
+            </Link>
+          </div>
         </div>
-        
       </header>
 
       <section style={card}>
@@ -97,6 +107,10 @@ export default function HomePage() {
         <div style={{ marginTop: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
           <Link href="/intake" style={primaryBtn}>
             Start Here
+          </Link>
+
+          <Link href="/sprints/sprint-a" style={secondaryBtn}>
+            Start at Sprint A
           </Link>
         </div>
       </section>

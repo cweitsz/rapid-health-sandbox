@@ -1,13 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { getActiveDossierId, getDossier } from "@/lib/storage";
-import { withDossier } from "@/lib/dossierHref";
-import { isUuidLike } from "@/lib/dossier";
 
 type Props = {
-  intakeHref?: string; // defaults to "/intake"
+  intakeHref?: string; // unused now, kept so app/page.tsx doesn't break
 };
 
 const btnStyle: React.CSSProperties = {
@@ -22,49 +18,9 @@ const btnStyle: React.CSSProperties = {
   color: "inherit",
 };
 
-export default function HomeCtas({ intakeHref = "/intake" }: Props) {
-  const router = useRouter();
-
-  function onResume() {
-    let active: string | null = null;
-
-    try {
-      active = getActiveDossierId();
-    } catch {
-      active = null;
-    }
-
-    if (!active || !isUuidLike(active)) {
-      router.push(intakeHref);
-      return;
-    }
-
-    let d: any = null;
-    try {
-      d = getDossier(active);
-    } catch {
-      d = null;
-    }
-
-    if (!d) {
-      router.push(intakeHref);
-      return;
-    }
-
-    const stepId = d.lastVisitedStepId || "1-1";
-    router.push(withDossier(`/steps/${stepId}`, active));
-  }
-
+export default function HomeCtas(_props: Props) {
   return (
     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-      <Link href={intakeHref} style={btnStyle}>
-        Start
-      </Link>
-
-      <button type="button" style={btnStyle} onClick={onResume}>
-        Resume
-      </button>
-
       <Link href="/privacy" style={btnStyle}>
         Read our Privacy Statement
       </Link>
