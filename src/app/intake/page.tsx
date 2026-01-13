@@ -37,12 +37,78 @@ export default function IntakePage() {
 
   const timerRef = useRef<number | null>(null);
 
-  function dismissOnboarding() {
+  // ----------------------------
+  // Safe wrappers (storage can throw)
+  // ----------------------------
+  function safeListDossiers(): DossierSummary[] {
+    try {
+      return listDossiers();
+    } catch {
+      return [];
+    }
+  }
+
+  function safeGetActiveDossierId(): string | null {
+    try {
+      return getActiveDossierId();
+    } catch {
+      return null;
+    }
+  }
+
+  function safeGetDossier(id: string): Dossier | null {
+    try {
+      return getDossier(id);
+    } catch {
+      return null;
+    }
+  }
+
+  function safeSetActiveDossierId(id: string) {
+    try {
+      setActiveDossierId(id);
+    } catch {
+      // ignore
+    }
+  }
+
+  function safeDeleteDossier(id: string) {
+    try {
+      deleteDossier(id);
+    } catch {
+      // ignore
+    }
+  }
+
+  function safeUpsertDossier(d: Dossier) {
+    try {
+      upsertDossier(d);
+    } catch {
+      // ignore
+    }
+  }
+
+  function safeGetOnboardingDismissed(): boolean {
+    try {
+      return !!window.localStorage.getItem("rhs:onboardingDismissed:v1");
+    } catch {
+      return false;
+    }
+  }
+
+  function safeSetOnboardingDismissed() {
     try {
       window.localStorage.setItem("rhs:onboardingDismissed:v1", "1");
     } catch {
       // ignore
     }
+  }
+
+  // ----------------------------
+  // Logic
+  // ----------------------------
+  function dismissOnboarding() {
+    safeSetOnboardingDismissed();
     setShowOnboarding(false);
   }
 
@@ -50,13 +116,13 @@ export default function IntakePage() {
     const cand = (candidate ?? "").trim();
 
     if (cand && isUuidLike(cand)) {
-      const d = getDossier(cand);
+      const d = safeGetDossier(cand);
       if (d) return { aid: cand, dossier: d };
     }
 
     const fallbackId = list[0]?.id ?? null;
     if (fallbackId) {
-      const d2 = getDossier(fallbackId);
+      const d2 = safeGetDossier(fallbackId);
       if (d2) return { aid: fallbackId, dossier: d2 };
     }
 
@@ -64,37 +130,33 @@ export default function IntakePage() {
   }
 
   useEffect(() => {
-    const list = listDossiers();
+    const list = safeListDossiers();
     setItems(list);
 
-    const stored = getActiveDossierId();
+    const stored = safeGetActiveDossierId();
     const resolved = resolveActive(list, stored);
 
-    if (resolved.aid) setActiveDossierId(resolved.aid);
+    if (resolved.aid) safeSetActiveDossierId(resolved.aid);
     setActiveId(resolved.aid);
     setDossier(resolved.dossier);
 
     setSaveMsg(resolved.aid ? "Autosave on" : "No active dossier");
 
     // Show onboarding until dismissed
-    try {
-      const dismissed = window.localStorage.getItem("rhs:onboardingDismissed:v1");
-      setShowOnboarding(!dismissed);
-    } catch {
-      setShowOnboarding(true);
-    }
+    const dismissed = safeGetOnboardingDismissed();
+    setShowOnboarding(!dismissed);
 
     setIsReady(true);
   }, []);
 
   function refresh(idOverride?: string | null) {
-    const list = listDossiers();
+    const list = safeListDossiers();
     setItems(list);
 
-    const candidate = idOverride ?? getActiveDossierId();
+    const candidate = idOverride ?? safeGetActiveDossierId();
     const resolved = resolveActive(list, candidate);
 
-    if (resolved.aid) setActiveDossierId(resolved.aid);
+    if (resolved.aid) safeSetActiveDossierId(resolved.aid);
     setActiveId(resolved.aid);
     setDossier(resolved.dossier);
 
@@ -108,20 +170,25 @@ export default function IntakePage() {
   }, [activeId, dossier]);
 
   function onCreateNew() {
-    const d = createDossier();
-    refresh(d.id);
-    setImportMsg("");
+    try {
+      const d = createDossier();
+      refresh(d.id);
+      setImportMsg("");
+    } catch {
+      setImportMsg("Could not create dossier (storage unavailable).");
+    }
   }
 
   function onCreateDemo() {
-  const d = createDemoDossier();
-  refresh(d.id);
-  setImportMsg("");
-
-  // Don't auto-dismiss onboarding.
-  // Let users explicitly dismiss it with the Dismiss button.
-}
-
+    try {
+      const d = createDemoDossier();
+      refresh(d.id);
+      setImportMsg("");
+      dismissOnboarding();
+    } catch {
+      setImportMsg("Could not create demo dossier (storage unavailable).");
+    }
+  }
 
   function onSwitch(id: string) {
     refresh(id);
@@ -133,13 +200,18 @@ export default function IntakePage() {
     const ok = window.confirm(`Delete dossier "${name}"?\n\nThis cannot be undone.`);
     if (!ok) return;
 
-    deleteDossier(id);
+    safeDeleteDossier(id);
     refresh();
   }
 
   function onExport() {
     if (!activeId) return;
-    const raw = exportDossier(activeId);
+    let raw = "";
+    try {
+      raw = exportDossier(activeId) || "";
+    } catch {
+      raw = "";
+    }
     if (!raw) return;
 
     const safeName = (dossier?.meta?.projectName || "dossier")
@@ -186,12 +258,11 @@ export default function IntakePage() {
     if (timerRef.current) window.clearTimeout(timerRef.current);
 
     timerRef.current = window.setTimeout(() => {
-      upsertDossier(dossier);
+      safeUpsertDossier(dossier);
       setSaveMsg(`Saved ${new Date().toLocaleTimeString()}`);
 
-      // Only refresh summaries so timestamps update in the dropdown,
-      // without reloading dossier (which can trigger repeated saves).
-      setItems(listDossiers());
+      // refresh summaries only
+      setItems(safeListDossiers());
     }, 300);
 
     return () => {
@@ -199,16 +270,19 @@ export default function IntakePage() {
     };
   }, [isReady, activeId, dossier]);
 
+  // ----------------------------
+  // UI
+  // ----------------------------
   if (!isReady) {
     return (
-      <main style={{ padding: 24, fontFamily: "system-ui" }}>
+      <main style={pageWrap}>
         <p>Loading…</p>
       </main>
     );
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+    <main style={pageWrap}>
       <h1 style={{ fontSize: 32, fontWeight: 900, margin: 0 }}>Dossier intake</h1>
       <p style={{ marginTop: 8, maxWidth: 760, lineHeight: 1.5 }}>
         Create a project or resume work you have already started.
@@ -254,11 +328,10 @@ export default function IntakePage() {
           <button type="button" style={btnStyle} onClick={onCreateNew}>
             + New dossier
           </button>
-          
+
           <button type="button" style={btnStyle} onClick={onCreateDemo}>
             + New demo dossier
-            </button>
-
+          </button>
 
           <Link href={resumeHref} style={linkBtnStyle}>
             Resume →
@@ -382,7 +455,7 @@ export default function IntakePage() {
                   <Link
                     href={withDossier(`/steps/${d.lastVisitedStepId || "1-1"}`, d.id)}
                     style={linkBtnStyle}
-                    onClick={() => setActiveDossierId(d.id)}
+                    onClick={() => safeSetActiveDossierId(d.id)}
                   >
                     Resume →
                   </Link>
@@ -399,6 +472,15 @@ export default function IntakePage() {
     </main>
   );
 }
+
+const pageWrap: React.CSSProperties = {
+  padding: 24,
+  fontFamily: "system-ui",
+  maxWidth: 980,
+  margin: "0 auto",
+  width: "100%",
+  boxSizing: "border-box",
+};
 
 function Section(props: { title: string; children: React.ReactNode }) {
   return (
@@ -454,6 +536,7 @@ const inputStyle: React.CSSProperties = {
   fontFamily: "system-ui",
   background: "transparent",
   color: "inherit",
+  boxSizing: "border-box",
 };
 
 function textareaStyle(minHeight: number): React.CSSProperties {
