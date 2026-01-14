@@ -9,7 +9,8 @@ import { getActiveDossierId, getDossier, listDossiers, setActiveDossierId } from
 function requiresDossier(pathname: string): boolean {
   return (
     pathname.startsWith("/steps/") ||
-    pathname.startsWith("/sprints/") ||
+    // NOTE: sprints are PUBLIC, not dossier-gated
+    // pathname.startsWith("/sprints/") ||
     pathname === "/review" ||
     pathname.startsWith("/review/")
   );
