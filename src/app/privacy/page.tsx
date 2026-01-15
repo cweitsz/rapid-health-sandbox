@@ -1,7 +1,15 @@
+import Link from "next/link";
+
 export default function PrivacyPage() {
   return (
     <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980, margin: "0 auto" }}>
       <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Privacy & data handling</h1>
+
+      <div style={{ marginTop: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <Link href="/" style={secondaryBtn}>
+          ← Back to Home
+        </Link>
+      </div>
 
       <p style={{ marginTop: 12, lineHeight: 1.6 }}>
         This app currently stores your work <strong>locally in your browser</strong> (localStorage). There is no account
@@ -25,3 +33,12 @@ export default function PrivacyPage() {
     </main>
   );
 }
+
+const secondaryBtn: React.CSSProperties = {
+  display: "inline-block",
+  padding: "10px 14px",
+  borderRadius: 12,
+  border: "1px solid #ddd",
+  fontWeight: 800,
+  textDecoration: "none",
+};
