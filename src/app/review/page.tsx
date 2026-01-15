@@ -8,6 +8,7 @@ import type { Dossier } from "@/lib/dossier";
 import { isUuidLike } from "@/lib/dossier";
 import { withDossier } from "@/lib/dossierHref";
 import { getDossier, exportDossier, downloadTextFile, upsertDossier } from "@/lib/storage";
+import ReviewerGate from "@/components/ReviewerGate";
 
 type StepInfo = {
   id: string; // "1-1" ... "1-10"
@@ -132,14 +133,6 @@ function getStepUpdatedAt(raw: unknown): string | null {
   return typeof ts === "string" && ts.trim() ? ts : null;
 }
 
-/**
- * Meaningful completion check:
- * - unwrap { value, updatedAt } if present
- * - strings must be non-empty
- * - arrays must have items
- * - objects must have at least one meaningful field besides updatedAt
- * - primitives count as meaningful
- */
 /**
  * Generic “has anything been filled” check.
  * - unwrap { value, updatedAt } if present
@@ -285,10 +278,9 @@ export default function ReviewPage() {
   const completedCount = useMemo(() => {
     if (!dossier) return 0;
     return STEPS.reduce((acc, s) => {
-        const raw = (dossier.steps as any)?.[s.id];
-        return acc + (isStepComplete(s.id, raw) ? 1 : 0);
+      const raw = (dossier.steps as any)?.[s.id];
+      return acc + (isStepComplete(s.id, raw) ? 1 : 0);
     }, 0);
-
   }, [dossier]);
 
   const totalScore = useMemo(() => {
@@ -407,227 +399,217 @@ export default function ReviewPage() {
     downloadTextFile(`${safeName}-${dossierId}.json`, raw);
   }
 
-  if (!isReady) {
-    return (
-      <main style={{ padding: 24, fontFamily: "system-ui" }}>
-        <p>Loading…</p>
-      </main>
-    );
-  }
-
-  if (!dossierId) {
-    return (
-      <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
-        <p style={{ marginTop: 10 }}>
-          No dossier in the URL. Go to <Link href="/intake">/intake</Link>.
-        </p>
-      </main>
-    );
-  }
-
-  if (!dossier) {
-    return (
-      <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
-        <p style={{ marginTop: 10 }}>
-          That dossier ID doesn’t exist in storage. Go to <Link href="/intake">/intake</Link>.
-        </p>
-      </main>
-    );
-  }
-
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
-      <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
+    <ReviewerGate>
+      {!isReady ? (
+        <main style={{ padding: 24, fontFamily: "system-ui" }}>
+          <p>Loading…</p>
+        </main>
+      ) : !dossierId ? (
+        <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
+          <p style={{ marginTop: 10 }}>
+            No dossier in the URL. Go to <Link href="/intake">/intake</Link>.
+          </p>
+        </main>
+      ) : !dossier ? (
+        <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
+          <p style={{ marginTop: 10 }}>
+            That dossier ID doesn’t exist in storage. Go to <Link href="/intake">/intake</Link>.
+          </p>
+        </main>
+      ) : (
+        <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
 
-      <div style={{ marginTop: 10, opacity: 0.8 }}>
-        <div>
-          <strong>Project:</strong> {dossier.meta?.projectName || "Untitled dossier"}
-        </div>
-        <div style={{ marginTop: 4 }}>
-          <strong>Dossier ID:</strong> <code>{dossierId}</code>
-        </div>
-        <div style={{ marginTop: 4 }}>
-          <strong>Progress:</strong> {completedCount}/{STEPS.length} steps completed
-        </div>
-        <div style={{ marginTop: 4 }}>
-          <strong>Last visited:</strong> <code>{(dossier as any)?.lastVisitedStepId || "1-1"}</code>
-        </div>
-        <div style={{ marginTop: 4 }}>
-          <strong>Updated:</strong> {formatDateTime(dossier.updatedAt)}
-        </div>
-      </div>
-
-      <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <button type="button" style={btnStyle} onClick={onExport}>
-          Export JSON
-        </button>
-
-        <button type="button" style={btnStyle} onClick={onCopyShareLink}>
-          Copy share link
-        </button>
-
-        <button type="button" style={btnStyle} onClick={onPrint}>
-          Print / Save as PDF
-        </button>
-
-        <Link href={homeHref} style={linkBtnStyle}>
-          Home
-        </Link>
-
-        <Link href={sprintHref("A")} style={linkBtnStyle}>
-          Sprint A
-        </Link>
-        <Link href={sprintHref("B")} style={linkBtnStyle}>
-          Sprint B
-        </Link>
-        <Link href={sprintHref("C")} style={linkBtnStyle}>
-          Sprint C
-        </Link>
-
-        <Link href={stepHref((dossier as any)?.lastVisitedStepId || "1-1")} style={linkBtnStyle}>
-          Resume →
-        </Link>
-
-        <Link href="/intake" style={linkBtnStyle}>
-          Back to Intake
-        </Link>
-      </div>
-
-      {copyMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{copyMsg}</div> : null}
-
-      <Section title="Reviewer mode">
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <div style={{ opacity: 0.8 }}>
-            <strong>Score:</strong> {totalScore}/10{" "}
-            <span style={{ fontSize: 12, opacity: 0.7 }}>(0–2 each across 5 criteria)</span>
-          </div>
-
-          <button type="button" style={btnStyle} onClick={() => setReviewOpen((x) => !x)}>
-            {reviewOpen ? "Hide rubric" : "Show rubric"}
-          </button>
-        </div>
-
-        {reviewSaveMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{reviewSaveMsg}</div> : null}
-
-        {reviewOpen ? (
-          <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
-            {RUBRIC.map((r) => {
-              const score = review.scores[r.key] ?? 0;
-              const note = review.notes[r.key] ?? "";
-
-              return (
-                <div key={r.key} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>{r.label}</div>
-                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{r.hint}</div>
-
-                  <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                    <label style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>Score</label>
-                    <select
-                      value={String(score)}
-                      onChange={(e) => {
-                        const n = clampScore(parseInt(e.target.value, 10));
-                        setReview((prev) => ({
-                          ...prev,
-                          scores: { ...prev.scores, [r.key]: n },
-                        }));
-                      }}
-                      style={selectStyle}
-                    >
-                      <option value="0">0</option>
-                      <option value="1">1</option>
-                      <option value="2">2</option>
-                    </select>
-                  </div>
-
-                  <div style={{ marginTop: 10 }}>
-                    <label style={{ fontWeight: 800, display: "block" }}>Reviewer notes</label>
-                    <textarea
-                      value={note}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setReview((prev) => ({
-                          ...prev,
-                          notes: { ...prev.notes, [r.key]: v },
-                        }));
-                      }}
-                      style={textareaStyle(90)}
-                      placeholder="What’s missing or weak? What would strengthen this?"
-                    />
-                  </div>
-                </div>
-              );
-            })}
-
-            <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
-              <div style={{ fontWeight: 900 }}>Overall notes</div>
-              <textarea
-                value={review.overallNotes}
-                onChange={(e) => setReview((prev) => ({ ...prev, overallNotes: e.target.value }))}
-                style={textareaStyle(120)}
-                placeholder="Summary: why this is Go / One-iteration / Stop."
-              />
+          <div style={{ marginTop: 10, opacity: 0.8 }}>
+            <div>
+              <strong>Project:</strong> {dossier.meta?.projectName || "Untitled dossier"}
+            </div>
+            <div style={{ marginTop: 4 }}>
+              <strong>Dossier ID:</strong> <code>{dossierId}</code>
+            </div>
+            <div style={{ marginTop: 4 }}>
+              <strong>Progress:</strong> {completedCount}/{STEPS.length} steps completed
+            </div>
+            <div style={{ marginTop: 4 }}>
+              <strong>Last visited:</strong> <code>{(dossier as any)?.lastVisitedStepId || "1-1"}</code>
+            </div>
+            <div style={{ marginTop: 4 }}>
+              <strong>Updated:</strong> {formatDateTime(dossier.updatedAt)}
             </div>
           </div>
-        ) : null}
-      </Section>
 
-      <Section title="Meta">
-        <Grid2>
-          <MetaRow label="Organisation" value={dossier.meta?.organisation || ""} />
-          <MetaRow label="Primary user" value={dossier.meta?.primaryUser || ""} />
-          <MetaRow label="Setting" value={dossier.meta?.setting || ""} />
-          <MetaRow label="One-line problem" value={dossier.meta?.oneLineProblem || ""} />
-        </Grid2>
-        {dossier.meta?.notes ? (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontWeight: 800 }}>Notes</div>
-            <div style={{ marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-              {dossier.meta.notes}
-            </div>
+          <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button type="button" style={btnStyle} onClick={onExport}>
+              Export JSON
+            </button>
+
+            <button type="button" style={btnStyle} onClick={onCopyShareLink}>
+              Copy share link
+            </button>
+
+            <button type="button" style={btnStyle} onClick={onPrint}>
+              Print / Save as PDF
+            </button>
+
+            <Link href={homeHref} style={linkBtnStyle}>
+              Home
+            </Link>
+
+            <Link href={sprintHref("A")} style={linkBtnStyle}>
+              Sprint A
+            </Link>
+            <Link href={sprintHref("B")} style={linkBtnStyle}>
+              Sprint B
+            </Link>
+            <Link href={sprintHref("C")} style={linkBtnStyle}>
+              Sprint C
+            </Link>
+
+            <Link href={stepHref((dossier as any)?.lastVisitedStepId || "1-1")} style={linkBtnStyle}>
+              Resume →
+            </Link>
+
+            <Link href="/intake" style={linkBtnStyle}>
+              Back to Intake
+            </Link>
           </div>
-        ) : null}
-      </Section>
 
-      <Section title="Steps">
-        <div style={{ display: "grid", gap: 10 }}>
-          {STEPS.map((s) => {
-            const raw = (dossier.steps as any)?.[s.id];
-            const done = isStepComplete(s.id, raw);
-            const updatedAt = getStepUpdatedAt(raw);
+          {copyMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{copyMsg}</div> : null}
 
-            return (
-              <div key={s.id} style={rowCardStyle}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 900 }}>
-                    {done ? "✅" : "⬜"} {s.title}
-                  </div>
-                  <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-                    Sprint {s.sprint}
-                    {updatedAt ? ` · Updated ${formatDateTime(updatedAt)}` : ""}
-                  </div>
-                </div>
+          <Section title="Reviewer mode">
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                flexWrap: "wrap",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div style={{ opacity: 0.8 }}>
+                <strong>Score:</strong> {totalScore}/10{" "}
+                <span style={{ fontSize: 12, opacity: 0.7 }}>(0–2 each across 5 criteria)</span>
+              </div>
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <Link href={stepHref(s.id)} style={linkBtnStyle}>
-                    Open →
-                  </Link>
+              <button type="button" style={btnStyle} onClick={() => setReviewOpen((x) => !x)}>
+                {reviewOpen ? "Hide rubric" : "Show rubric"}
+              </button>
+            </div>
+
+            {reviewSaveMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{reviewSaveMsg}</div> : null}
+
+            {reviewOpen ? (
+              <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+                {RUBRIC.map((r) => {
+                  const score = review.scores[r.key] ?? 0;
+                  const note = review.notes[r.key] ?? "";
+
+                  return (
+                    <div key={r.key} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
+                      <div style={{ fontWeight: 900 }}>{r.label}</div>
+                      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{r.hint}</div>
+
+                      <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                        <label style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>Score</label>
+                        <select
+                          value={String(score)}
+                          onChange={(e) => {
+                            const n = clampScore(parseInt(e.target.value, 10));
+                            setReview((prev) => ({
+                              ...prev,
+                              scores: { ...prev.scores, [r.key]: n },
+                            }));
+                          }}
+                          style={selectStyle}
+                        >
+                          <option value="0">0</option>
+                          <option value="1">1</option>
+                          <option value="2">2</option>
+                        </select>
+                      </div>
+
+                      <div style={{ marginTop: 10 }}>
+                        <label style={{ fontWeight: 800, display: "block" }}>Reviewer notes</label>
+                        <textarea
+                          value={note}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setReview((prev) => ({
+                              ...prev,
+                              notes: { ...prev.notes, [r.key]: v },
+                            }));
+                          }}
+                          style={textareaStyle(90)}
+                          placeholder="What’s missing or weak? What would strengthen this?"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>Overall notes</div>
+                  <textarea
+                    value={review.overallNotes}
+                    onChange={(e) => setReview((prev) => ({ ...prev, overallNotes: e.target.value }))}
+                    style={textareaStyle(120)}
+                    placeholder="Summary: why this is Go / One-iteration / Stop."
+                  />
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </Section>
-    </main>
+            ) : null}
+          </Section>
+
+          <Section title="Meta">
+            <Grid2>
+              <MetaRow label="Organisation" value={dossier.meta?.organisation || ""} />
+              <MetaRow label="Primary user" value={dossier.meta?.primaryUser || ""} />
+              <MetaRow label="Setting" value={dossier.meta?.setting || ""} />
+              <MetaRow label="One-line problem" value={dossier.meta?.oneLineProblem || ""} />
+            </Grid2>
+            {dossier.meta?.notes ? (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 800 }}>Notes</div>
+                <div style={{ marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{dossier.meta.notes}</div>
+              </div>
+            ) : null}
+          </Section>
+
+          <Section title="Steps">
+            <div style={{ display: "grid", gap: 10 }}>
+              {STEPS.map((s) => {
+                const raw = (dossier.steps as any)?.[s.id];
+                const done = isStepComplete(s.id, raw);
+                const updatedAt = getStepUpdatedAt(raw);
+
+                return (
+                  <div key={s.id} style={rowCardStyle}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 900 }}>
+                        {done ? "✅" : "⬜"} {s.title}
+                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
+                        Sprint {s.sprint}
+                        {updatedAt ? ` · Updated ${formatDateTime(updatedAt)}` : ""}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <Link href={stepHref(s.id)} style={linkBtnStyle}>
+                        Open →
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Section>
+        </main>
+      )}
+    </ReviewerGate>
   );
 }
 
@@ -648,9 +630,7 @@ function MetaRow(props: { label: string; value: string }) {
   return (
     <div>
       <div style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>{props.label}</div>
-      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
-        {props.value || <span style={{ opacity: 0.5 }}>—</span>}
-      </div>
+      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{props.value || <span style={{ opacity: 0.5 }}>—</span>}</div>
     </div>
   );
 }
