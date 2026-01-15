@@ -295,10 +295,11 @@ export default function IntakePage() {
             </Link>
         </div>
 
-      <h1 style={{ fontSize: 32, fontWeight: 900, margin: 0 }}>Dossier intake</h1>
-      <p style={{ marginTop: 8, maxWidth: 760, lineHeight: 1.5 }}>
-        Create a project or resume work you have already started.
-      </p>
+      <h1 style={{ fontSize: 32, fontWeight: 900, margin: 0 }}>Project Hub</h1>
+      <ul style={{ marginTop: 8, maxWidth: 760, lineHeight: 1.5 }}>
+        <li>Create a new project or resume one that you have already started.</li>
+        <li>Unsure how to get started? Try clicking "+New Demo Project" to load a sample project.</li>
+      </ul>
 
       <div style={{ marginTop: 14, fontSize: 12, opacity: 0.75 }}>{saveMsg}</div>
 
@@ -338,11 +339,11 @@ export default function IntakePage() {
           </select>
 
           <button type="button" style={btnStyle} onClick={onCreateNew}>
-            + New dossier
+            + New Project
           </button>
 
           <button type="button" style={btnStyle} onClick={onCreateDemo}>
-            + New demo dossier
+            + New Demo Project
           </button>
 
           <Link href={resumeHref} style={linkBtnStyle}>
@@ -403,7 +404,7 @@ export default function IntakePage() {
         )}
       </Section>
 
-      <Section title="Import">
+      <Section title="Upload">
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
           <input
             type="file"
@@ -417,7 +418,7 @@ export default function IntakePage() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <label style={{ fontWeight: 800 }}>Paste JSON</label>
+          <label style={{ fontWeight: 800 }}>Paste your project JSON file below</label>
           <textarea
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
