@@ -347,7 +347,7 @@ export default function IntakePage() {
           </button>
 
           <Link href={resumeHref} style={linkBtnStyle}>
-            Resume →
+            Start / Resume →
           </Link>
 
           <button type="button" style={btnStyle} onClick={onExport} disabled={!activeId}>
