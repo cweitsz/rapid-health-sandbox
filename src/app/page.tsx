@@ -19,7 +19,7 @@ export default function HomePage() {
         <div style={{ marginTop: 16 }}>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <Link href="/intake" style={primaryBtn}>
-              Start / Manage Dossiers
+              Start / Manage My Projects
             </Link>
 
             <Link href="/sprints" style={secondaryBtn}>
@@ -109,9 +109,6 @@ export default function HomePage() {
             Start Here
           </Link>
 
-          <Link href="/sprints/sprint-a" style={secondaryBtn}>
-            Start at Sprint A
-          </Link>
         </div>
       </section>
 
