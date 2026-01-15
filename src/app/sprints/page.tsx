@@ -17,8 +17,8 @@ export default function SprintsIndexPage() {
           <Link href="/" style={secondaryBtn}>
             ← Back to Home
           </Link>
-          <Link href="/intake" style={primaryBtn}>
-            Go to Intake
+          <Link href="/intake" style={secondaryBtn}>
+            Start / Manage My Projects
           </Link>
         </div>
       </header>
@@ -104,7 +104,7 @@ export default function SprintsIndexPage() {
 
       <footer style={{ marginTop: 24, paddingTop: 14, borderTop: "1px solid #ddd", opacity: 0.85 }}>
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5 }}>
-          Note: drafting happens locally in your browser once you create a dossier in Intake. No account required.
+          Note: Drafting your project happens locally in your browser once you create a project. You control your info - No account required!
         </p>
       </footer>
     </main>
