@@ -404,12 +404,12 @@ export default function Step14Page() {
         </div>
 
         <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-          Tip: your “decision rule” is where you prove you’re serious.
+          Tip: In "Decision Rule", be concrete and take time to re-read what you've written, don't just say Go because you feel like it!
         </div>
       </Card>
 
       <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
-        If this page feels more demanding than before: correct. It’s replacing wishful thinking with measurement.
+        Take your time to really do this step well. It links directly to 1.6 to save you time and energy!
       </div>
     </StepShell>
   );
@@ -458,7 +458,7 @@ function MetricEditor(props: { value: MetricSpec; onChange: (v: MetricSpec) => v
       </div>
 
       <Field
-        label="Instrument (how measured)"
+        label="Instrument (How you'll measure it)"
         value={v.instrument}
         onChange={(x) => props.onChange({ ...v, instrument: x })}
         placeholder="e.g. timestamps, audit checklist, manual count, observation sheet"
