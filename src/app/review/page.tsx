@@ -373,7 +373,7 @@ export default function ReviewPage() {
 
   if (!isReady) {
     return (
-      <main style={{ padding: 24, fontFamily: "system-ui" }}>
+      <main style={pageStyle}>
         <p>Loading…</p>
       </main>
     );
@@ -381,7 +381,7 @@ export default function ReviewPage() {
 
   if (!dossierId) {
     return (
-      <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+      <main style={pageStyle}>
         <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
         <p style={{ marginTop: 10 }}>
           No dossier in the URL. Go to <Link href="/intake">/intake</Link>.
@@ -392,7 +392,7 @@ export default function ReviewPage() {
 
   if (!dossier) {
     return (
-      <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+      <main style={pageStyle}>
         <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
         <p style={{ marginTop: 10 }}>
           That dossier ID doesn’t exist in storage. Go to <Link href="/intake">/intake</Link>.
@@ -402,7 +402,7 @@ export default function ReviewPage() {
   }
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+    <main style={pageStyle}>
       <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
 
       <div style={{ marginTop: 10, opacity: 0.8 }}>
@@ -435,10 +435,6 @@ export default function ReviewPage() {
         <button type="button" style={btnStyle} onClick={onPrint}>
           Print / Save as PDF
         </button>
-
-        <Link href={homeHref} style={linkBtnStyle}>
-          Home
-        </Link>
 
         <Link href={stepHref((dossier as any)?.lastVisitedStepId || "1-1")} style={linkBtnStyle}>
           Resume →
@@ -600,10 +596,20 @@ function MetaRow(props: { label: string; value: string }) {
   return (
     <div>
       <div style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>{props.label}</div>
-      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{props.value || <span style={{ opacity: 0.5 }}>—</span>}</div>
+      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
+        {props.value || <span style={{ opacity: 0.5 }}>—</span>}
+      </div>
     </div>
   );
 }
+
+const pageStyle: React.CSSProperties = {
+  padding: 24,
+  fontFamily: "system-ui",
+  maxWidth: 980,
+  width: "100%",
+  margin: "0 auto",
+};
 
 const btnStyle: React.CSSProperties = {
   padding: "10px 14px",
