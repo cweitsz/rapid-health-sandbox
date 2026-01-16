@@ -1,207 +1,119 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-const STORAGE_KEY = "rhs:reviewerUnlocked:v1";
+const LS_KEY = "rhs:reviewer:unlocked:v1";
 
-type Status = "checking" | "locked" | "unlocked";
+function safeGetUnlocked(): boolean {
+  try {
+    return window.localStorage.getItem(LS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function safeSetUnlocked() {
+  try {
+    window.localStorage.setItem(LS_KEY, "1");
+  } catch {
+    // ignore
+  }
+}
 
 export default function ReviewerGate(props: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const sp = useSearchParams();
 
-  const [status, setStatus] = useState<Status>("checking");
-  const [inputKey, setInputKey] = useState("");
-  const [msg, setMsg] = useState<string>("");
+  const [ready, setReady] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
 
-  const urlKey = useMemo(() => (searchParams?.get("key") ?? "").trim(), [searchParams]);
+  const attemptedRef = useRef(false);
 
+  const keyFromUrl = useMemo(() => {
+    return (sp?.get("key") || "").trim();
+  }, [sp]);
+
+  const currentQuery = useMemo(() => sp?.toString() || "", [sp]);
+
+  // Strip ?key= from URL (preserve everything else like d=...)
   function stripKeyFromUrl() {
-    const params = new URLSearchParams(searchParams?.toString() || "");
-    params.delete("key");
-    const qs = params.toString();
-    router.replace(qs ? `${pathname}?${qs}` : `${pathname}`);
-  }
-
-  async function verifyKey(key: string): Promise<boolean> {
-    const k = (key ?? "").trim();
-    if (!k) return false;
-
     try {
-      const res = await fetch(`/api/reviewer/verify?key=${encodeURIComponent(k)}`, {
-        method: "GET",
-        cache: "no-store",
-      });
-
-      if (!res.ok) return false;
-
-      const json = (await res.json()) as any;
-      return !!json?.ok;
+      const params = new URLSearchParams(currentQuery);
+      params.delete("key");
+      const qs = params.toString();
+      const next = qs ? `${pathname}?${qs}` : pathname;
+      router.replace(next);
     } catch {
-      return false;
-    }
-  }
-
-  function safeGetUnlocked(): boolean {
-    try {
-      return window.localStorage.getItem(STORAGE_KEY) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  function safeSetUnlocked() {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, "1");
-    } catch {
-      // ignore
-    }
-  }
-
-  function safeClearUnlocked() {
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
+      // if anything goes sideways, do nothing
     }
   }
 
   useEffect(() => {
-    // Already unlocked on this device
+    // 1) If already unlocked locally, just allow.
     if (safeGetUnlocked()) {
-      setStatus("unlocked");
+      setUnlocked(true);
+      setReady(true);
+
+      // If someone navigated with ?key= anyway, clean it.
+      if (keyFromUrl) stripKeyFromUrl();
       return;
     }
 
-    // URL has key: verify it
-    if (urlKey) {
-      (async () => {
-        const ok = await verifyKey(urlKey);
-        if (ok) {
-          safeSetUnlocked();
-          setStatus("unlocked");
-          stripKeyFromUrl(); // IMPORTANT: removes key but preserves ?d=
-          return;
+    // 2) If no key provided, stay locked.
+    if (!keyFromUrl) {
+      setUnlocked(false);
+      setReady(true);
+      return;
+    }
+
+    // 3) Verify key once (avoid double-fetch loops).
+    if (attemptedRef.current) return;
+    attemptedRef.current = true;
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/reviewer/verify?key=${encodeURIComponent(keyFromUrl)}`, {
+          cache: "no-store",
+        });
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (data && data.ok === true) {
+            safeSetUnlocked();
+            setUnlocked(true);
+            setReady(true);
+
+            // Remove the key from the URL immediately.
+            stripKeyFromUrl();
+            return;
+          }
         }
 
-        setMsg("Invalid reviewer key.");
-        setStatus("locked");
-      })();
+        // invalid key
+        setUnlocked(false);
+        setReady(true);
+      } catch {
+        setUnlocked(false);
+        setReady(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyFromUrl, pathname, currentQuery]);
 
-      return;
-    }
+  if (!ready) return null;
 
-    setStatus("locked");
-  }, [urlKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function onUnlock() {
-    setMsg("");
-    const ok = await verifyKey(inputKey);
-    if (!ok) {
-      setMsg("Invalid reviewer key.");
-      return;
-    }
-
-    safeSetUnlocked();
-    setStatus("unlocked");
-    stripKeyFromUrl();
+  if (!unlocked) {
+    return (
+      <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980, margin: "0 auto" }}>
+        <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Reviewer mode locked</h1>
+        <p style={{ marginTop: 10, lineHeight: 1.6, opacity: 0.85 }}>
+          Add <code>?key=YOUR_REVIEWER_KEY</code> to the URL to unlock.
+        </p>
+      </main>
+    );
   }
 
-  if (status === "unlocked") return <>{props.children}</>;
-  if (status === "checking") return null;
-
-  // Locked UI
-  return (
-    <main style={wrap}>
-      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 900 }}>Reviewer access</h1>
-      <p style={{ marginTop: 10, lineHeight: 1.6, maxWidth: 760, opacity: 0.9 }}>
-        This page is restricted. Enter a reviewer key to continue.
-      </p>
-
-      <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <input
-          value={inputKey}
-          onChange={(e) => setInputKey(e.target.value)}
-          placeholder="Reviewer key"
-          style={input}
-        />
-        <button type="button" onClick={onUnlock} style={btn} disabled={!inputKey.trim()}>
-          Unlock
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            safeClearUnlocked();
-            setInputKey("");
-            setMsg("Cleared local unlock.");
-          }}
-          style={btnGhost}
-        >
-          Clear unlock
-        </button>
-      </div>
-
-      {msg ? <div style={{ marginTop: 10, fontSize: 13, color: "#b00", fontWeight: 800 }}>{msg}</div> : null}
-
-      <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <Link href="/" style={linkBtn}>
-          ← Back to Home
-        </Link>
-        <Link href="/intake" style={linkBtn}>
-          Go to Intake
-        </Link>
-      </div>
-
-      <p style={{ marginTop: 14, fontSize: 12, opacity: 0.75, lineHeight: 1.5, maxWidth: 760 }}>
-        Note: unlocking is stored only in your browser (localStorage). Clearing site data will remove access.
-      </p>
-    </main>
-  );
+  return <>{props.children}</>;
 }
-
-const wrap: React.CSSProperties = {
-  padding: 24,
-  fontFamily: "system-ui",
-  maxWidth: 980,
-  margin: "0 auto",
-};
-
-const input: React.CSSProperties = {
-  padding: "10px 12px",
-  borderRadius: 12,
-  border: "1px solid #ccc",
-  minWidth: 260,
-  fontFamily: "system-ui",
-};
-
-const btn: React.CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 12,
-  border: "1px solid #111",
-  background: "#111",
-  color: "#fff",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
-const btnGhost: React.CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 12,
-  border: "1px solid #ddd",
-  background: "transparent",
-  fontWeight: 800,
-  cursor: "pointer",
-};
-
-const linkBtn: React.CSSProperties = {
-  display: "inline-block",
-  padding: "10px 14px",
-  borderRadius: 12,
-  border: "1px solid #ddd",
-  fontWeight: 800,
-  textDecoration: "none",
-};

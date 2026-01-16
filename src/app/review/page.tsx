@@ -399,6 +399,16 @@ export default function ReviewPage() {
     downloadTextFile(`${safeName}-${dossierId}.json`, raw);
   }
 
+  // ✅ NEW: lock reviewer mode (clears unlock flag + reloads)
+  function onLockReviewer() {
+    try {
+      window.localStorage.removeItem("rhs:reviewer:unlocked:v1");
+    } catch {
+      // ignore
+    }
+    if (typeof window !== "undefined") window.location.reload();
+  }
+
   return (
     <ReviewerGate>
       {!isReady ? (
@@ -452,6 +462,11 @@ export default function ReviewPage() {
 
             <button type="button" style={btnStyle} onClick={onPrint}>
               Print / Save as PDF
+            </button>
+
+            {/* ✅ NEW */}
+            <button type="button" style={btnStyle} onClick={onLockReviewer}>
+              Lock reviewer mode
             </button>
 
             <Link href={homeHref} style={linkBtnStyle}>
@@ -630,7 +645,9 @@ function MetaRow(props: { label: string; value: string }) {
   return (
     <div>
       <div style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>{props.label}</div>
-      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{props.value || <span style={{ opacity: 0.5 }}>—</span>}</div>
+      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
+        {props.value || <span style={{ opacity: 0.5 }}>—</span>}
+      </div>
     </div>
   );
 }
