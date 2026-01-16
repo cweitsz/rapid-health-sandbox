@@ -66,13 +66,13 @@ export default function StepShell(props: Props) {
       <div style={topBar}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Link href={intakeHref} style={navBtn}>
-            Back to Intake
+            Back to Project Hub
           </Link>
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Link href={reviewHref} style={navBtn}>
-            Overall Review
+            Self-Review Hub
           </Link>
         </div>
       </div>
