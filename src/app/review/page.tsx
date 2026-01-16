@@ -8,7 +8,6 @@ import type { Dossier } from "@/lib/dossier";
 import { isUuidLike } from "@/lib/dossier";
 import { withDossier } from "@/lib/dossierHref";
 import { getDossier, exportDossier, downloadTextFile, upsertDossier } from "@/lib/storage";
-import ReviewerGate from "@/components/ReviewerGate";
 
 type StepInfo = {
   id: string; // "1-1" ... "1-10"
@@ -133,14 +132,6 @@ function getStepUpdatedAt(raw: unknown): string | null {
   return typeof ts === "string" && ts.trim() ? ts : null;
 }
 
-/**
- * Generic “has anything been filled” check.
- * - unwrap { value, updatedAt } if present
- * - strings must be non-empty
- * - arrays must have items
- * - objects must have at least one meaningful field besides updatedAt
- * - primitives count as meaningful (handled more strictly per-step where needed)
- */
 function isMeaningfulGeneric(raw: unknown): boolean {
   if (raw == null) return false;
 
@@ -162,15 +153,9 @@ function isMeaningfulGeneric(raw: unknown): boolean {
 
   if (typeof raw === "string") return raw.trim().length > 0;
 
-  // numbers/booleans count generically as meaningful
   return true;
 }
 
-/**
- * Step-aware completion:
- * - Step 1.6 should NOT tick just because method has a default.
- * - Step 1.10 should NOT tick just because decision defaults to "iterate" or scores are 0.
- */
 function isStepComplete(stepId: string, raw: unknown): boolean {
   if (!isMeaningfulGeneric(raw)) return false;
 
@@ -181,7 +166,6 @@ function isStepComplete(stepId: string, raw: unknown): boolean {
     if ("value" in obj && "updatedAt" in obj) val = obj.value;
   }
 
-  // Step 1.6: ignore `method` (defaults to "mixed")
   if (stepId === "1-6") {
     if (!val || typeof val !== "object" || Array.isArray(val)) return isMeaningfulGeneric(val);
     const obj = val as Record<string, any>;
@@ -189,7 +173,6 @@ function isStepComplete(stepId: string, raw: unknown): boolean {
     return Object.keys(rest).some((k) => isMeaningfulGeneric(rest[k]));
   }
 
-  // Step 1.10: require *actual* input
   if (stepId === "1-10") {
     if (!val || typeof val !== "object" || Array.isArray(val)) return isMeaningfulGeneric(val);
     const obj = val as Record<string, any>;
@@ -205,18 +188,15 @@ function isStepComplete(stepId: string, raw: unknown): boolean {
       typeof obj.artifactsChecklist === "object" &&
       Object.values(obj.artifactsChecklist as Record<string, any>).some(Boolean);
 
-    // NOTE: we intentionally ignore `decision` alone (defaults to "iterate")
     return rationaleFilled || nextActionsFilled || anyScoreAboveZero || anyChecklistTrue;
   }
 
-  // All other steps: generic check is fine
   return isMeaningfulGeneric(val);
 }
 
 export default function ReviewPage() {
   const sp = useSearchParams();
 
-  // URL is canonical on dossier-bound routes.
   const dossierId = useMemo(() => {
     const d = sp.get("d")?.trim();
     return d && isUuidLike(d) ? d : null;
@@ -225,7 +205,6 @@ export default function ReviewPage() {
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [isReady, setIsReady] = useState(false);
 
-  // Reviewer state
   const [reviewOpen, setReviewOpen] = useState(true);
   const [review, setReview] = useState<ReviewerV1>(() => defaultReviewer());
   const [reviewSaveMsg, setReviewSaveMsg] = useState<string>("");
@@ -244,7 +223,6 @@ export default function ReviewPage() {
     const d = safeGetDossier(dossierId);
     setDossier(d);
 
-    // load existing reviewer info if present
     const existing = (d?.meta as any)?.reviewerV1;
     if (existing && typeof existing === "object" && existing.version === "reviewer-v1") {
       const loaded: ReviewerV1 = {
@@ -287,7 +265,6 @@ export default function ReviewPage() {
     return (Object.values(review.scores) as number[]).reduce((a, b) => a + b, 0);
   }, [review.scores]);
 
-  // Debounced autosave reviewer meta (does NOT touch lastVisitedStepId)
   useEffect(() => {
     if (!dossierId) return;
     if (!isReady) return;
@@ -304,7 +281,6 @@ export default function ReviewPage() {
         return;
       }
 
-      // IMPORTANT: do NOT setReview(updatedAt=now) or you create a save loop.
       const toSave: ReviewerV1 = {
         ...review,
         updatedAt: nowIso(),
@@ -334,7 +310,6 @@ export default function ReviewPage() {
     };
   }, [review, dossierId, isReady]);
 
-  // Landing page is "/" now. Do NOT attach ?d= to Home.
   const homeHref = "/";
 
   const sprintHref = useMemo(() => {
@@ -392,239 +367,219 @@ export default function ReviewPage() {
     const raw = exportDossier(dossierId);
     if (!raw) return;
 
-    const safeName = (dossier?.meta?.projectName || "dossier")
-      .replace(/[^a-z0-9-_]+/gi, "-")
-      .toLowerCase();
-
+    const safeName = (dossier?.meta?.projectName || "dossier").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
     downloadTextFile(`${safeName}-${dossierId}.json`, raw);
   }
 
-  // ✅ NEW: lock reviewer mode (clears unlock flag + reloads)
-  function onLockReviewer() {
-    try {
-      window.localStorage.removeItem("rhs:reviewer:unlocked:v1");
-    } catch {
-      // ignore
-    }
-    if (typeof window !== "undefined") window.location.reload();
+  if (!isReady) {
+    return (
+      <main style={{ padding: 24, fontFamily: "system-ui" }}>
+        <p>Loading…</p>
+      </main>
+    );
+  }
+
+  if (!dossierId) {
+    return (
+      <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
+        <p style={{ marginTop: 10 }}>
+          No dossier in the URL. Go to <Link href="/intake">/intake</Link>.
+        </p>
+      </main>
+    );
+  }
+
+  if (!dossier) {
+    return (
+      <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
+        <p style={{ marginTop: 10 }}>
+          That dossier ID doesn’t exist in storage. Go to <Link href="/intake">/intake</Link>.
+        </p>
+      </main>
+    );
   }
 
   return (
-    <ReviewerGate>
-      {!isReady ? (
-        <main style={{ padding: 24, fontFamily: "system-ui" }}>
-          <p>Loading…</p>
-        </main>
-      ) : !dossierId ? (
-        <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
-          <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
-          <p style={{ marginTop: 10 }}>
-            No dossier in the URL. Go to <Link href="/intake">/intake</Link>.
-          </p>
-        </main>
-      ) : !dossier ? (
-        <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
-          <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
-          <p style={{ marginTop: 10 }}>
-            That dossier ID doesn’t exist in storage. Go to <Link href="/intake">/intake</Link>.
-          </p>
-        </main>
-      ) : (
-        <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
-          <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
+    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
+      <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>Review</h1>
 
-          <div style={{ marginTop: 10, opacity: 0.8 }}>
-            <div>
-              <strong>Project:</strong> {dossier.meta?.projectName || "Untitled dossier"}
-            </div>
-            <div style={{ marginTop: 4 }}>
-              <strong>Dossier ID:</strong> <code>{dossierId}</code>
-            </div>
-            <div style={{ marginTop: 4 }}>
-              <strong>Progress:</strong> {completedCount}/{STEPS.length} steps completed
-            </div>
-            <div style={{ marginTop: 4 }}>
-              <strong>Last visited:</strong> <code>{(dossier as any)?.lastVisitedStepId || "1-1"}</code>
-            </div>
-            <div style={{ marginTop: 4 }}>
-              <strong>Updated:</strong> {formatDateTime(dossier.updatedAt)}
-            </div>
+      <div style={{ marginTop: 10, opacity: 0.8 }}>
+        <div>
+          <strong>Project:</strong> {dossier.meta?.projectName || "Untitled dossier"}
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <strong>Dossier ID:</strong> <code>{dossierId}</code>
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <strong>Progress:</strong> {completedCount}/{STEPS.length} steps completed
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <strong>Last visited:</strong> <code>{(dossier as any)?.lastVisitedStepId || "1-1"}</code>
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <strong>Updated:</strong> {formatDateTime(dossier.updatedAt)}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button type="button" style={btnStyle} onClick={onExport}>
+          Export JSON
+        </button>
+
+        <button type="button" style={btnStyle} onClick={onCopyShareLink}>
+          Copy share link
+        </button>
+
+        <button type="button" style={btnStyle} onClick={onPrint}>
+          Print / Save as PDF
+        </button>
+
+        <Link href={homeHref} style={linkBtnStyle}>
+          Home
+        </Link>
+
+        <Link href={stepHref((dossier as any)?.lastVisitedStepId || "1-1")} style={linkBtnStyle}>
+          Resume →
+        </Link>
+
+        <Link href="/intake" style={linkBtnStyle}>
+          Back to Intake
+        </Link>
+      </div>
+
+      {copyMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{copyMsg}</div> : null}
+
+      <Section title="Reviewer mode">
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ opacity: 0.8 }}>
+            <strong>Score:</strong> {totalScore}/10{" "}
+            <span style={{ fontSize: 12, opacity: 0.7 }}>(0–2 each across 5 criteria)</span>
           </div>
 
-          <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button type="button" style={btnStyle} onClick={onExport}>
-              Export JSON
-            </button>
+          <button type="button" style={btnStyle} onClick={() => setReviewOpen((x) => !x)}>
+            {reviewOpen ? "Hide rubric" : "Show rubric"}
+          </button>
+        </div>
 
-            <button type="button" style={btnStyle} onClick={onCopyShareLink}>
-              Copy share link
-            </button>
+        {reviewSaveMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{reviewSaveMsg}</div> : null}
 
-            <button type="button" style={btnStyle} onClick={onPrint}>
-              Print / Save as PDF
-            </button>
+        {reviewOpen ? (
+          <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+            {RUBRIC.map((r) => {
+              const score = review.scores[r.key] ?? 0;
+              const note = review.notes[r.key] ?? "";
 
-            {/* ✅ NEW */}
-            <button type="button" style={btnStyle} onClick={onLockReviewer}>
-              Lock reviewer mode
-            </button>
+              return (
+                <div key={r.key} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>{r.label}</div>
+                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{r.hint}</div>
 
-            <Link href={homeHref} style={linkBtnStyle}>
-              Home
-            </Link>
+                  <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                    <label style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>Score</label>
+                    <select
+                      value={String(score)}
+                      onChange={(e) => {
+                        const n = clampScore(parseInt(e.target.value, 10));
+                        setReview((prev) => ({
+                          ...prev,
+                          scores: { ...prev.scores, [r.key]: n },
+                        }));
+                      }}
+                      style={selectStyle}
+                    >
+                      <option value="0">0</option>
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                    </select>
+                  </div>
 
-            <Link href={sprintHref("A")} style={linkBtnStyle}>
-              Sprint A
-            </Link>
-            <Link href={sprintHref("B")} style={linkBtnStyle}>
-              Sprint B
-            </Link>
-            <Link href={sprintHref("C")} style={linkBtnStyle}>
-              Sprint C
-            </Link>
+                  <div style={{ marginTop: 10 }}>
+                    <label style={{ fontWeight: 800, display: "block" }}>Reviewer notes</label>
+                    <textarea
+                      value={note}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setReview((prev) => ({
+                          ...prev,
+                          notes: { ...prev.notes, [r.key]: v },
+                        }));
+                      }}
+                      style={textareaStyle(90)}
+                      placeholder="What’s missing or weak? What would strengthen this?"
+                    />
+                  </div>
+                </div>
+              );
+            })}
 
-            <Link href={stepHref((dossier as any)?.lastVisitedStepId || "1-1")} style={linkBtnStyle}>
-              Resume →
-            </Link>
-
-            <Link href="/intake" style={linkBtnStyle}>
-              Back to Intake
-            </Link>
-          </div>
-
-          {copyMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{copyMsg}</div> : null}
-
-          <Section title="Reviewer mode">
-            <div
-              style={{
-                display: "flex",
-                gap: 10,
-                flexWrap: "wrap",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div style={{ opacity: 0.8 }}>
-                <strong>Score:</strong> {totalScore}/10{" "}
-                <span style={{ fontSize: 12, opacity: 0.7 }}>(0–2 each across 5 criteria)</span>
-              </div>
-
-              <button type="button" style={btnStyle} onClick={() => setReviewOpen((x) => !x)}>
-                {reviewOpen ? "Hide rubric" : "Show rubric"}
-              </button>
+            <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
+              <div style={{ fontWeight: 900 }}>Overall notes</div>
+              <textarea
+                value={review.overallNotes}
+                onChange={(e) => setReview((prev) => ({ ...prev, overallNotes: e.target.value }))}
+                style={textareaStyle(120)}
+                placeholder="Summary: why this is Go / One-iteration / Stop."
+              />
             </div>
+          </div>
+        ) : null}
+      </Section>
 
-            {reviewSaveMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{reviewSaveMsg}</div> : null}
+      <Section title="Meta">
+        <Grid2>
+          <MetaRow label="Organisation" value={dossier.meta?.organisation || ""} />
+          <MetaRow label="Primary user" value={dossier.meta?.primaryUser || ""} />
+          <MetaRow label="Setting" value={dossier.meta?.setting || ""} />
+          <MetaRow label="One-line problem" value={dossier.meta?.oneLineProblem || ""} />
+        </Grid2>
+        {dossier.meta?.notes ? (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 800 }}>Notes</div>
+            <div style={{ marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{dossier.meta.notes}</div>
+          </div>
+        ) : null}
+      </Section>
 
-            {reviewOpen ? (
-              <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
-                {RUBRIC.map((r) => {
-                  const score = review.scores[r.key] ?? 0;
-                  const note = review.notes[r.key] ?? "";
+      <Section title="Steps">
+        <div style={{ display: "grid", gap: 10 }}>
+          {STEPS.map((s) => {
+            const raw = (dossier.steps as any)?.[s.id];
+            const done = isStepComplete(s.id, raw);
+            const updatedAt = getStepUpdatedAt(raw);
 
-                  return (
-                    <div key={r.key} style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
-                      <div style={{ fontWeight: 900 }}>{r.label}</div>
-                      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{r.hint}</div>
+            return (
+              <div key={s.id} style={rowCardStyle}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 900 }}>
+                    {done ? "✅" : "⬜"} {s.title}
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
+                    Sprint {s.sprint}
+                    {updatedAt ? ` · Updated ${formatDateTime(updatedAt)}` : ""}
+                  </div>
+                </div>
 
-                      <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                        <label style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>Score</label>
-                        <select
-                          value={String(score)}
-                          onChange={(e) => {
-                            const n = clampScore(parseInt(e.target.value, 10));
-                            setReview((prev) => ({
-                              ...prev,
-                              scores: { ...prev.scores, [r.key]: n },
-                            }));
-                          }}
-                          style={selectStyle}
-                        >
-                          <option value="0">0</option>
-                          <option value="1">1</option>
-                          <option value="2">2</option>
-                        </select>
-                      </div>
-
-                      <div style={{ marginTop: 10 }}>
-                        <label style={{ fontWeight: 800, display: "block" }}>Reviewer notes</label>
-                        <textarea
-                          value={note}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setReview((prev) => ({
-                              ...prev,
-                              notes: { ...prev.notes, [r.key]: v },
-                            }));
-                          }}
-                          style={textareaStyle(90)}
-                          placeholder="What’s missing or weak? What would strengthen this?"
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-
-                <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
-                  <div style={{ fontWeight: 900 }}>Overall notes</div>
-                  <textarea
-                    value={review.overallNotes}
-                    onChange={(e) => setReview((prev) => ({ ...prev, overallNotes: e.target.value }))}
-                    style={textareaStyle(120)}
-                    placeholder="Summary: why this is Go / One-iteration / Stop."
-                  />
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Link href={stepHref(s.id)} style={linkBtnStyle}>
+                    Open →
+                  </Link>
                 </div>
               </div>
-            ) : null}
-          </Section>
-
-          <Section title="Meta">
-            <Grid2>
-              <MetaRow label="Organisation" value={dossier.meta?.organisation || ""} />
-              <MetaRow label="Primary user" value={dossier.meta?.primaryUser || ""} />
-              <MetaRow label="Setting" value={dossier.meta?.setting || ""} />
-              <MetaRow label="One-line problem" value={dossier.meta?.oneLineProblem || ""} />
-            </Grid2>
-            {dossier.meta?.notes ? (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 800 }}>Notes</div>
-                <div style={{ marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{dossier.meta.notes}</div>
-              </div>
-            ) : null}
-          </Section>
-
-          <Section title="Steps">
-            <div style={{ display: "grid", gap: 10 }}>
-              {STEPS.map((s) => {
-                const raw = (dossier.steps as any)?.[s.id];
-                const done = isStepComplete(s.id, raw);
-                const updatedAt = getStepUpdatedAt(raw);
-
-                return (
-                  <div key={s.id} style={rowCardStyle}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 900 }}>
-                        {done ? "✅" : "⬜"} {s.title}
-                      </div>
-                      <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-                        Sprint {s.sprint}
-                        {updatedAt ? ` · Updated ${formatDateTime(updatedAt)}` : ""}
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      <Link href={stepHref(s.id)} style={linkBtnStyle}>
-                        Open →
-                      </Link>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </Section>
-        </main>
-      )}
-    </ReviewerGate>
+            );
+          })}
+        </div>
+      </Section>
+    </main>
   );
 }
 
@@ -645,9 +600,7 @@ function MetaRow(props: { label: string; value: string }) {
   return (
     <div>
       <div style={{ fontWeight: 800, fontSize: 12, opacity: 0.8 }}>{props.label}</div>
-      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
-        {props.value || <span style={{ opacity: 0.5 }}>—</span>}
-      </div>
+      <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{props.value || <span style={{ opacity: 0.5 }}>—</span>}</div>
     </div>
   );
 }
