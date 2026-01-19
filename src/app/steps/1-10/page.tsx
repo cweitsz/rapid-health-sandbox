@@ -21,7 +21,7 @@ type GateDecision = "go" | "one-iteration" | "stop";
 type Step110Payload = {
   decision: GateDecision;
 
-  // 0–10 (you can treat as 0–2 if you want, this doesn’t enforce anything)
+  // 0–10
   evidenceQuality: number;
   severity: number;
   willingnessToPay: number;
@@ -90,6 +90,33 @@ function firstIntFromString(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+/* ---------- Auto-block helpers (idempotent) ---------- */
+
+type AutoTag = "step14" | "step16";
+
+function upsertAutoBlock(base: string, tag: AutoTag, content: string): string {
+  const start = `\n[Auto:${tag}:START]\n`;
+  const end = `\n[Auto:${tag}:END]\n`;
+  const block = `${start}${content.trim()}\n${end}`;
+
+  const current = (base ?? "").trimEnd();
+  const re = new RegExp(`\\n\\[Auto:${tag}:START\\][\\s\\S]*?\\n\\[Auto:${tag}:END\\]\\n?`, "m");
+
+  if (!current) return block.trim() + "\n";
+
+  if (re.test(current)) {
+    return current.replace(re, "\n" + block + "\n").trimEnd() + "\n";
+  }
+
+  return current + "\n\n" + block + "\n";
+}
+
 /* ---------- Step 1.4 summary extraction ---------- */
 
 type MetricSummary = {
@@ -130,32 +157,56 @@ function extractStep14Summary(dossier: Dossier | null): Step14Summary {
     return { ok: false, metrics: [], guardrails: "", measurementPlan: "", updatedAt, note: "Step 1.4 is empty." };
   }
 
-  // Common shapes:
-  // v1 you showed: { leadMetric1: {name, baseline, target, howMeasured, window}, leadMetric2: {...}, guardrails, measurementPlan }
-  // v2 variant: might add definition or different keys. We handle best-effort.
   if (!isObject(v)) {
     return { ok: false, metrics: [], guardrails: "", measurementPlan: "", updatedAt, note: "Step 1.4 is not an object payload." };
   }
 
-  const m1 = v.leadMetric1 ?? null;
-  const m2 = v.leadMetric2 ?? null;
+  const m1 = (v as any).leadMetric1 ?? null;
+  const m2 = (v as any).leadMetric2 ?? null;
 
   const metrics: MetricSummary[] = [];
   if (m1) metrics.push(normalizeMetric(m1));
   if (m2) metrics.push(normalizeMetric(m2));
 
-  const guardrails = String(v.guardrails ?? "").trim();
-  const measurementPlan = String(v.measurementPlan ?? v.plan ?? "").trim();
+  const guardrails = String((v as any).guardrails ?? "").trim();
+  const measurementPlan = String((v as any).measurementPlan ?? (v as any).plan ?? "").trim();
 
-  const ok = metrics.some((m) => m.name || m.baseline || m.target || m.howMeasured || m.window) || !!guardrails || !!measurementPlan;
+  const ok =
+    metrics.some((m) => m.name || m.baseline || m.target || m.howMeasured || m.window) ||
+    !!guardrails ||
+    !!measurementPlan;
 
-  return {
-    ok,
-    metrics,
-    guardrails,
-    measurementPlan,
-    updatedAt,
-  };
+  return { ok, metrics, guardrails, measurementPlan, updatedAt };
+}
+
+function buildStep14SnapshotText(s14: Step14Summary): string {
+  const lines: string[] = [];
+  lines.push("Step 1.4 Snapshot (auto)");
+  if (s14.updatedAt) lines.push(`Last updated: ${formatDateTime(s14.updatedAt)}`);
+  lines.push("");
+
+  const ms = s14.metrics.length ? s14.metrics : [];
+  if (ms.length === 0) {
+    lines.push("No lead metrics found.");
+  } else {
+    ms.forEach((m, idx) => {
+      lines.push(`Lead metric ${idx + 1}: ${m.name || "—"}`);
+      if (m.definition) lines.push(`- Definition: ${m.definition}`);
+      lines.push(`- Baseline: ${m.baseline || "—"}`);
+      lines.push(`- Target: ${m.target || "—"}`);
+      lines.push(`- How measured: ${m.howMeasured || "—"}`);
+      lines.push(`- Window/frequency: ${m.window || "—"}`);
+      lines.push("");
+    });
+  }
+
+  lines.push("Guardrails:");
+  lines.push(s14.guardrails ? s14.guardrails : "—");
+  lines.push("");
+  lines.push("Measurement plan:");
+  lines.push(s14.measurementPlan ? s14.measurementPlan : "—");
+
+  return lines.join("\n").trim();
 }
 
 /* ---------- Step 1.6 summary extraction ---------- */
@@ -197,26 +248,20 @@ function extractStep16Summary(dossier: Dossier | null): Step16Summary {
   const v = getStepValue(dossier, "1-6");
   const updatedAt = getStepUpdatedAt(dossier, "1-6");
 
-  // Default empty summary
   const empty: Step16Summary = {
     ok: false,
     version: "unknown",
     updatedAt,
-
     totalSessions: 0,
     byKind: { interview: 0, observation: 0, artifact: 0 },
     avgSeverity: 0,
-
     unmappedCount: 0,
     mappedPct: 0,
-
     totalQuotes: 0,
     baselineSignalCount: 0,
     workaroundCount: 0,
-
     metricCounts: {},
     topPains: [],
-
     evidencePack: {
       targetN: 6,
       passSessions: false,
@@ -226,7 +271,6 @@ function extractStep16Summary(dossier: Dossier | null): Step16Summary {
       passConsent: false,
       identifiableInfoStored: false,
     },
-
     note: "Step 1.6 is empty or not migrated.",
   };
 
@@ -235,14 +279,13 @@ function extractStep16Summary(dossier: Dossier | null): Step16Summary {
 
   const version = String((v as any).version ?? "unknown");
   if (version !== "1.6-v2") {
-    // Still show something, but we can’t reliably compute session-based evidence
     const consentScript = isObject((v as any).consent) ? String((v as any).consent.scriptOrNotes ?? "") : "";
     const ok = Boolean(consentScript.trim()) || Boolean(String((v as any).targetParticipants ?? "").trim());
     return {
       ...empty,
       ok,
       version,
-      note: "Step 1.6 isn’t on v2, so session summary is unavailable. (Migrate by opening Step 1.6 and saving once.)",
+      note: "Step 1.6 isn’t on v2, so session summary is unavailable. (Open Step 1.6 once to migrate.)",
     };
   }
 
@@ -266,7 +309,9 @@ function extractStep16Summary(dossier: Dossier | null): Step16Summary {
     const kind = String((s as any).kind ?? "interview") as keyof typeof byKind;
     if (kind in byKind) (byKind as any)[kind] += 1;
 
-    const mapped = Array.isArray((s as any).mappedMetrics) ? (s as any).mappedMetrics.map(String).filter(Boolean) : [];
+    const mapped = Array.isArray((s as any).mappedMetrics)
+      ? (s as any).mappedMetrics.map(String).filter(Boolean)
+      : [];
     if (mapped.length === 0) unmappedCount += 1;
 
     const quotes = [String((s as any).quote1 ?? ""), String((s as any).quote2 ?? ""), String((s as any).quote3 ?? "")]
@@ -328,23 +373,64 @@ function extractStep16Summary(dossier: Dossier | null): Step16Summary {
     ok,
     version,
     updatedAt,
-
     totalSessions,
     byKind,
     avgSeverity,
-
     unmappedCount,
     mappedPct,
-
     totalQuotes,
     baselineSignalCount,
     workaroundCount,
-
     metricCounts,
     topPains,
-
     evidencePack,
   };
+}
+
+function buildStep16SnapshotText(s16: Step16Summary): string {
+  const lines: string[] = [];
+  lines.push("Step 1.6 Snapshot (auto)");
+  if (s16.updatedAt) lines.push(`Last updated: ${formatDateTime(s16.updatedAt)} · Payload: ${s16.version}`);
+  lines.push("");
+
+  if (!s16.ok) {
+    lines.push(s16.note ?? "No usable Step 1.6 data found.");
+    return lines.join("\n").trim();
+  }
+
+  lines.push(
+    `Sessions: ${s16.totalSessions} (Interview ${s16.byKind.interview}, Observation ${s16.byKind.observation}, Artifact ${s16.byKind.artifact})`
+  );
+  lines.push(`Mapped: ${Math.max(0, s16.totalSessions - s16.unmappedCount)}/${s16.totalSessions} (${s16.mappedPct}%)`);
+  lines.push(`Unmapped sessions: ${s16.unmappedCount}`);
+  lines.push(`Avg severity: ${s16.avgSeverity}`);
+  lines.push(`Quotes captured: ${s16.totalQuotes}`);
+  lines.push(`Baseline signals: ${s16.baselineSignalCount}/${s16.totalSessions}`);
+  lines.push(`Workarounds captured: ${s16.workaroundCount}/${s16.totalSessions}`);
+  lines.push("");
+
+  lines.push("Evidence pack checklist (soft):");
+  lines.push(`- Sessions (target ≥ ${s16.evidencePack.targetN}): ${s16.evidencePack.passSessions ? "PASS" : "FAIL"}`);
+  lines.push(`- Quotes (target ≥ ${MIN_QUOTES}): ${s16.evidencePack.passQuotes ? "PASS" : "FAIL"}`);
+  lines.push(`- Workaround captured: ${s16.evidencePack.passWorkaround ? "PASS" : "FAIL"}`);
+  lines.push(`- Baseline signals (target ≥ ${MIN_BASELINE_SIGNALS}): ${s16.evidencePack.passBaselineSignals ? "PASS" : "FAIL"}`);
+  lines.push(`- Consent addressed: ${s16.evidencePack.passConsent ? "PASS" : "FAIL"}`);
+  if (s16.evidencePack.identifiableInfoStored) lines.push(`- ⚠ Identifiable info stored: TRUE`);
+  lines.push("");
+
+  lines.push("Metric mapping counts:");
+  lines.push(`- leadMetric1: ${s16.metricCounts["leadMetric1"] ?? 0}`);
+  lines.push(`- leadMetric2: ${s16.metricCounts["leadMetric2"] ?? 0}`);
+  lines.push("");
+
+  lines.push("Top pains (by frequency):");
+  if (s16.topPains.length === 0) {
+    lines.push("- —");
+  } else {
+    for (const [p, n] of s16.topPains) lines.push(`- ${p} (${n})`);
+  }
+
+  return lines.join("\n").trim();
 }
 
 /* ---------- Page ---------- */
@@ -369,6 +455,30 @@ export default function Step110Page() {
     );
   }, [value]);
 
+  function onPopulateFrom14() {
+    const snap = buildStep14SnapshotText(s14);
+    setValue({
+      ...value,
+      rationale: upsertAutoBlock(value.rationale ?? "", "step14", snap),
+      artifactsChecklist: {
+        ...value.artifactsChecklist,
+        step14_metrics: value.artifactsChecklist.step14_metrics || Boolean(s14.ok),
+      },
+    });
+  }
+
+  function onPopulateFrom16() {
+    const snap = buildStep16SnapshotText(s16);
+    setValue({
+      ...value,
+      rationale: upsertAutoBlock(value.rationale ?? "", "step16", snap),
+      artifactsChecklist: {
+        ...value.artifactsChecklist,
+        step16_evidencePlanOrLog: value.artifactsChecklist.step16_evidencePlanOrLog || Boolean(s16.ok),
+      },
+    });
+  }
+
   if (!isReady) return <Loading />;
   if (!dossierId || !dossier) return <NoDossier />;
 
@@ -384,24 +494,28 @@ export default function Step110Page() {
       <StepHelp title="How to use this">
         <div style={{ marginTop: 8, lineHeight: 1.6 }}>
           <div style={{ fontSize: 13, opacity: 0.9 }}>
-            This is where optimism goes to die. You’re not “deciding”, you’re applying a rule to evidence.
+            Apply a rule to evidence. If you can’t cite counts/quotes/artifacts, you’re writing fan fiction.
           </div>
           <ul style={{ marginTop: 10, paddingLeft: 18 }}>
-            <li>Read the pulled summaries first (1.4 metrics, 1.6 evidence pack).</li>
-            <li>Score only after you’ve seen what the evidence actually says.</li>
-            <li>Write rationale that cites counts, quotes, or artifacts, not vibes.</li>
-            <li>“One-iteration” should be a tight loop (≤2 days). More than 2 loops = Stop.</li>
+            <li>Use the Populate buttons to drop a clean evidence snapshot into your rationale.</li>
+            <li>Then write a decision that references that snapshot.</li>
+            <li>One-iteration should be ≤2 days. More than 2 loops = Stop.</li>
           </ul>
         </div>
       </StepHelp>
 
       {/* Pulled from Step 1.4 */}
       <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+        <div style={cardHeaderRow}>
           <h3 style={h3}>Pulled from Step 1.4 (Measurable Indicators)</h3>
-          <Link href={step14Href} style={linkStyle}>
-            Open 1.4 →
-          </Link>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Link href={step14Href} style={linkStyle}>
+              Open 1.4 →
+            </Link>
+            <button type="button" style={btnSmallStyle} onClick={onPopulateFrom14}>
+              Populate from 1.4
+            </button>
+          </div>
         </div>
 
         {s14.updatedAt ? <div style={metaLine}>Last updated: {formatDateTime(s14.updatedAt)}</div> : null}
@@ -445,14 +559,23 @@ export default function Step110Page() {
 
       {/* Pulled from Step 1.6 */}
       <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+        <div style={cardHeaderRow}>
           <h3 style={h3}>Pulled from Step 1.6 (Evidence Summary)</h3>
-          <Link href={step16Href} style={linkStyle}>
-            Open 1.6 →
-          </Link>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Link href={step16Href} style={linkStyle}>
+              Open 1.6 →
+            </Link>
+            <button type="button" style={btnSmallStyle} onClick={onPopulateFrom16}>
+              Populate from 1.6
+            </button>
+          </div>
         </div>
 
-        {s16.updatedAt ? <div style={metaLine}>Last updated: {formatDateTime(s16.updatedAt)} · Payload: <code>{s16.version}</code></div> : null}
+        {s16.updatedAt ? (
+          <div style={metaLine}>
+            Last updated: {formatDateTime(s16.updatedAt)} · Payload: <code>{s16.version}</code>
+          </div>
+        ) : null}
 
         {!s16.ok ? (
           <div style={warnText}>⚠ {s16.note ?? "No usable Step 1.6 data found."}</div>
@@ -462,27 +585,16 @@ export default function Step110Page() {
               <div style={{ fontWeight: 900 }}>Counts</div>
               <div style={{ marginTop: 8, display: "grid", gap: 6, fontSize: 13, opacity: 0.9 }}>
                 <div>
-                  <strong>Sessions:</strong> {s16.totalSessions} (Interview {s16.byKind.interview}, Observation {s16.byKind.observation}, Artifact{" "}
-                  {s16.byKind.artifact})
+                  <strong>Sessions:</strong> {s16.totalSessions} (Interview {s16.byKind.interview}, Observation {s16.byKind.observation}, Artifact {s16.byKind.artifact})
                 </div>
                 <div>
                   <strong>Mapped:</strong> {Math.max(0, s16.totalSessions - s16.unmappedCount)}/{s16.totalSessions} ({s16.mappedPct}%)
                 </div>
-                <div>
-                  <strong>Unmapped sessions:</strong> {s16.unmappedCount}
-                </div>
-                <div>
-                  <strong>Avg severity:</strong> {s16.avgSeverity}
-                </div>
-                <div>
-                  <strong>Quotes captured:</strong> {s16.totalQuotes}
-                </div>
-                <div>
-                  <strong>Baseline signals:</strong> {s16.baselineSignalCount}/{s16.totalSessions}
-                </div>
-                <div>
-                  <strong>Workarounds captured:</strong> {s16.workaroundCount}/{s16.totalSessions}
-                </div>
+                <div><strong>Unmapped sessions:</strong> {s16.unmappedCount}</div>
+                <div><strong>Avg severity:</strong> {s16.avgSeverity}</div>
+                <div><strong>Quotes captured:</strong> {s16.totalQuotes}</div>
+                <div><strong>Baseline signals:</strong> {s16.baselineSignalCount}/{s16.totalSessions}</div>
+                <div><strong>Workarounds captured:</strong> {s16.workaroundCount}/{s16.totalSessions}</div>
               </div>
             </div>
 
@@ -551,31 +663,11 @@ export default function Step110Page() {
         </div>
 
         <div style={scoreGridStyle}>
-          <ScoreSelect
-            label="Evidence quality"
-            value={value.evidenceQuality}
-            onChange={(n) => setValue({ ...value, evidenceQuality: n })}
-          />
-          <ScoreSelect
-            label="Severity"
-            value={value.severity}
-            onChange={(n) => setValue({ ...value, severity: n })}
-          />
-          <ScoreSelect
-            label="Willingness to pay"
-            value={value.willingnessToPay}
-            onChange={(n) => setValue({ ...value, willingnessToPay: n })}
-          />
-          <ScoreSelect
-            label="Feasibility"
-            value={value.feasibility}
-            onChange={(n) => setValue({ ...value, feasibility: n })}
-          />
-          <ScoreSelect
-            label="Differentiation"
-            value={value.differentiation}
-            onChange={(n) => setValue({ ...value, differentiation: n })}
-          />
+          <ScoreSelect label="Evidence quality" value={value.evidenceQuality} onChange={(n) => setValue({ ...value, evidenceQuality: n })} />
+          <ScoreSelect label="Severity" value={value.severity} onChange={(n) => setValue({ ...value, severity: n })} />
+          <ScoreSelect label="Willingness to pay" value={value.willingnessToPay} onChange={(n) => setValue({ ...value, willingnessToPay: n })} />
+          <ScoreSelect label="Feasibility" value={value.feasibility} onChange={(n) => setValue({ ...value, feasibility: n })} />
+          <ScoreSelect label="Differentiation" value={value.differentiation} onChange={(n) => setValue({ ...value, differentiation: n })} />
         </div>
 
         <h4 style={h4}>Artifacts checklist</h4>
@@ -585,12 +677,7 @@ export default function Step110Page() {
               key={k}
               label={k.replace(/_/g, " ")}
               checked={!!checked}
-              onChange={(b) =>
-                setValue({
-                  ...value,
-                  artifactsChecklist: { ...value.artifactsChecklist, [k]: b },
-                })
-              }
+              onChange={(b) => setValue({ ...value, artifactsChecklist: { ...value.artifactsChecklist, [k]: b } })}
             />
           ))}
         </div>
@@ -600,12 +687,12 @@ export default function Step110Page() {
           value={value.rationale}
           onChange={(v) => setValue({ ...value, rationale: v })}
           placeholder={
-            "Write the decision like a reviewer is going to challenge you.\n" +
-            "- What evidence (counts/quotes/artifacts) supports this?\n" +
+            "Use the Populate buttons above, then write the decision like a reviewer will challenge you.\n" +
+            "- What evidence supports this?\n" +
             "- What evidence weakens it?\n" +
-            "- Why Go / One-iteration / Stop is justified given the above?"
+            "- Why Go / One-iteration / Stop is justified?"
           }
-          minH={140}
+          minH={180}
         />
 
         <Area
@@ -714,16 +801,18 @@ function ChecklistLine(props: { label: string; ok: boolean }) {
   );
 }
 
-function formatDateTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
 /* ---------- styles ---------- */
 
 const h3: CSSProperties = { marginTop: 0, marginBottom: 10, fontSize: 16, fontWeight: 800 };
 const h4: CSSProperties = { marginTop: 14, marginBottom: 8, fontSize: 14, fontWeight: 900, opacity: 0.9 };
+
+const cardHeaderRow: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
+  flexWrap: "wrap",
+  alignItems: "baseline",
+};
 
 const panelStyle: CSSProperties = {
   border: "1px solid #ddd",
@@ -746,6 +835,16 @@ const warnText: CSSProperties = {
 const linkStyle: CSSProperties = {
   textDecoration: "none",
   fontWeight: 800,
+};
+
+const btnSmallStyle: CSSProperties = {
+  padding: "8px 12px",
+  border: "1px solid #ccc",
+  borderRadius: 12,
+  fontWeight: 800,
+  background: "transparent",
+  cursor: "pointer",
+  fontSize: 12,
 };
 
 const scoreGridStyle: CSSProperties = {
