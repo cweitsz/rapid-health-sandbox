@@ -149,12 +149,22 @@ const DEFAULT_PAYLOAD: Step16PayloadV2 = {
   sessions: [],
 };
 
+const MIN_QUOTES = 10;
+const MIN_BASELINE_SIGNALS = 2;
+
 function isObject(x: unknown): x is Record<string, any> {
   return typeof x === "object" && x !== null;
 }
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function firstIntFromString(s: string): number | null {
+  const m = (s || "").match(/(\d+)/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -257,32 +267,36 @@ function migrateToV2(raw: any): Step16PayloadV2 {
     // normalize minimal defaults
     return {
       version: "1.6-v2",
-      method: (raw.method === "interviews" || raw.method === "observation" || raw.method === "mixed") ? raw.method : "mixed",
+      method: raw.method === "interviews" || raw.method === "observation" || raw.method === "mixed" ? raw.method : "mixed",
       targetParticipants: String(raw.targetParticipants ?? ""),
       sampling: {
         ...DEFAULT_SAMPLING,
-        ...(isObject(raw.sampling) ? {
-          primarySegment: String(raw.sampling.primarySegment ?? ""),
-          inclusionCriteria: String(raw.sampling.inclusionCriteria ?? ""),
-          exclusionCriteria: String(raw.sampling.exclusionCriteria ?? ""),
-          recruitmentChannel: String(raw.sampling.recruitmentChannel ?? ""),
-          sampleTarget: String(raw.sampling.sampleTarget ?? ""),
-          whyEnough: String(raw.sampling.whyEnough ?? ""),
-          mixRequirement: String(raw.sampling.mixRequirement ?? ""),
-          stopRule: String(raw.sampling.stopRule ?? ""),
-          notes: String(raw.sampling.notes ?? ""),
-        } : {}),
+        ...(isObject(raw.sampling)
+          ? {
+              primarySegment: String(raw.sampling.primarySegment ?? ""),
+              inclusionCriteria: String(raw.sampling.inclusionCriteria ?? ""),
+              exclusionCriteria: String(raw.sampling.exclusionCriteria ?? ""),
+              recruitmentChannel: String(raw.sampling.recruitmentChannel ?? ""),
+              sampleTarget: String(raw.sampling.sampleTarget ?? ""),
+              whyEnough: String(raw.sampling.whyEnough ?? ""),
+              mixRequirement: String(raw.sampling.mixRequirement ?? ""),
+              stopRule: String(raw.sampling.stopRule ?? ""),
+              notes: String(raw.sampling.notes ?? ""),
+            }
+          : {}),
       },
       protocol: String(raw.protocol ?? ""),
       consent: {
         ...DEFAULT_CONSENT,
-        ...(isObject(raw.consent) ? {
-          consentObtained: Boolean(raw.consent.consentObtained ?? false),
-          identifiableInfoStored: Boolean(raw.consent.identifiableInfoStored ?? false),
-          storageAccessNotes: String(raw.consent.storageAccessNotes ?? ""),
-          retentionNotes: String(raw.consent.retentionNotes ?? ""),
-          scriptOrNotes: String(raw.consent.scriptOrNotes ?? ""),
-        } : {}),
+        ...(isObject(raw.consent)
+          ? {
+              consentObtained: Boolean(raw.consent.consentObtained ?? false),
+              identifiableInfoStored: Boolean(raw.consent.identifiableInfoStored ?? false),
+              storageAccessNotes: String(raw.consent.storageAccessNotes ?? ""),
+              retentionNotes: String(raw.consent.retentionNotes ?? ""),
+              scriptOrNotes: String(raw.consent.scriptOrNotes ?? ""),
+            }
+          : {}),
       },
       schedulePlan: String(raw.schedulePlan ?? ""),
       dataCapturePlan: String(raw.dataCapturePlan ?? ""),
@@ -293,7 +307,7 @@ function migrateToV2(raw: any): Step16PayloadV2 {
             .map((s: any) => ({
               ...DEFAULT_SESSION,
               id: String(s.id ?? makeId()),
-              kind: (s.kind === "interview" || s.kind === "observation" || s.kind === "artifact") ? s.kind : "interview",
+              kind: s.kind === "interview" || s.kind === "observation" || s.kind === "artifact" ? s.kind : "interview",
               date: String(s.date ?? ""),
               role: String(s.role ?? ""),
               setting: String(s.setting ?? ""),
@@ -311,9 +325,13 @@ function migrateToV2(raw: any): Step16PayloadV2 {
               mappedMetrics: Array.isArray(s.mappedMetrics) ? s.mappedMetrics.map(String) : [],
               baselineSignal: String(s.baselineSignal ?? ""),
               hypothesisTested: String(s.hypothesisTested ?? ""),
-              hypothesisOutcome: (s.hypothesisOutcome === "supports" || s.hypothesisOutcome === "weakens" || s.hypothesisOutcome === "disconfirms" || s.hypothesisOutcome === "unclear")
-                ? s.hypothesisOutcome
-                : "unclear",
+              hypothesisOutcome:
+                s.hypothesisOutcome === "supports" ||
+                s.hypothesisOutcome === "weakens" ||
+                s.hypothesisOutcome === "disconfirms" ||
+                s.hypothesisOutcome === "unclear"
+                  ? s.hypothesisOutcome
+                  : "unclear",
               extraNotes: String(s.extraNotes ?? ""),
             }))
         : [],
@@ -322,8 +340,7 @@ function migrateToV2(raw: any): Step16PayloadV2 {
   }
 
   // v0.1 shape (your current Step16Payload)
-  const method: Method =
-    raw?.method === "interviews" || raw?.method === "observation" || raw?.method === "mixed" ? raw.method : "mixed";
+  const method: Method = raw?.method === "interviews" || raw?.method === "observation" || raw?.method === "mixed" ? raw.method : "mixed";
 
   return {
     version: "1.6-v2",
@@ -379,20 +396,40 @@ export default function Step16Page() {
   const counts = useMemo(() => {
     const sessions = v2.sessions ?? [];
     const byKind: Record<EvidenceKind, number> = { interview: 0, observation: 0, artifact: 0 };
+
     let sevSum = 0;
     let sevN = 0;
 
     const metricCounts: Record<string, number> = {};
     const painCounts: Record<string, number> = {};
 
+    let unmappedCount = 0;
+    let totalQuotes = 0;
+    let baselineSignalCount = 0;
+    let workaroundCount = 0;
+
     for (const s of sessions) {
       byKind[s.kind] = (byKind[s.kind] ?? 0) + 1;
+
+      const mapped = (s.mappedMetrics ?? []).filter(Boolean);
+      if (mapped.length === 0) unmappedCount += 1;
+
+      // quotes
+      const quotes = [s.quote1, s.quote2, s.quote3].map((q) => (q || "").trim()).filter(Boolean);
+      totalQuotes += quotes.length;
+
+      // baseline signal
+      if ((s.baselineSignal || "").trim()) baselineSignalCount += 1;
+
+      // workaround
+      if ((s.workaround || "").trim()) workaroundCount += 1;
+
       if (typeof s.severity010 === "number") {
         sevSum += s.severity010;
         sevN += 1;
       }
 
-      for (const mk of (s.mappedMetrics ?? [])) {
+      for (const mk of mapped) {
         metricCounts[mk] = (metricCounts[mk] ?? 0) + 1;
       }
 
@@ -412,7 +449,22 @@ export default function Step16Page() {
 
     const avgSeverity = sevN ? Math.round((sevSum / sevN) * 10) / 10 : 0;
 
-    return { total: sessions.length, byKind, metricCounts, topPains, avgSeverity };
+    const total = sessions.length;
+    const mappedCount = Math.max(0, total - unmappedCount);
+    const mappedPct = total ? Math.round((mappedCount / total) * 100) : 0;
+
+    return {
+      total,
+      byKind,
+      metricCounts,
+      topPains,
+      avgSeverity,
+      unmappedCount,
+      mappedPct,
+      totalQuotes,
+      baselineSignalCount,
+      workaroundCount,
+    };
   }, [v2.sessions]);
 
   function setPlanPatch(patch: Partial<Step16PayloadV2>) {
@@ -457,14 +509,20 @@ export default function Step16Page() {
       <StepHelp title="How to fill this in">
         <div style={{ marginTop: 8, lineHeight: 1.6 }}>
           <div style={{ fontSize: 13, opacity: 0.9 }}>
-            This step produces an evidence pack a reviewer can trust: <strong>who</strong>, <strong>what</strong>, and
-            <strong> how</strong> you’ll decide. Most importantly: every session should map back to the metrics in Step 1.4.
+            This step produces an evidence pack a reviewer can trust: <strong>who</strong>, <strong>what</strong>, and <strong>how</strong> you’ll decide.
+            Most importantly: every session should map back to the metrics in Step 1.4.
           </div>
 
           <ul style={{ marginTop: 10, paddingLeft: 18 }}>
-            <li><strong>Sampling box:</strong> inclusion/exclusion, channel, target, stop rule.</li>
-            <li><strong>Session logs:</strong> 3 quotes, 3 pains, workaround, time/cost, severity, mapped metrics.</li>
-            <li><strong>Counts summary:</strong> turns your “insights” into something measurable.</li>
+            <li>
+              <strong>Sampling box:</strong> inclusion/exclusion, channel, target, stop rule.
+            </li>
+            <li>
+              <strong>Session logs:</strong> 3 quotes, 3 pains, workaround, time/cost, severity, mapped metrics.
+            </li>
+            <li>
+              <strong>Counts summary:</strong> turns your “insights” into something measurable.
+            </li>
           </ul>
 
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
@@ -728,9 +786,17 @@ export default function Step16Page() {
             {v2.sessions.map((s, idx) => (
               <div key={s.id} style={sessionCardStyle}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                  <div style={{ fontWeight: 900 }}>
-                    Session {idx + 1} · {s.kind}
+                  <div style={{ fontWeight: 900, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span>
+                      Session {idx + 1} · {s.kind}
+                    </span>
+                    {(s.mappedMetrics ?? []).length > 0 ? (
+                      <span style={{ ...badgeStyle, borderColor: "#4caf50" }}>✅ Mapped</span>
+                    ) : (
+                      <span style={{ ...badgeStyle, borderColor: "#ff9800" }}>⚠ Unmapped</span>
+                    )}
                   </div>
+
                   <button type="button" style={miniBtnStyle} onClick={() => removeSession(s.id)}>
                     Remove
                   </button>
@@ -814,9 +880,7 @@ export default function Step16Page() {
                 <h4 style={h4}>Map to Step 1.4 lead metrics</h4>
 
                 {missingMetrics ? (
-                  <div style={{ fontSize: 13, opacity: 0.9 }}>
-                    ⚠ No metrics available. Fill Step 1.4 first.
-                  </div>
+                  <div style={{ fontSize: 13, opacity: 0.9 }}>⚠ No metrics available. Fill Step 1.4 first.</div>
                 ) : (
                   <div style={{ display: "grid", gap: 8 }}>
                     {metricOptions.map((m) => {
@@ -850,10 +914,7 @@ export default function Step16Page() {
                     label="Hypothesis tested"
                     value={s.hypothesisTested}
                     onChange={(x) => updateSession(s.id, { hypothesisTested: x })}
-                    options={[
-                      { value: "", label: "—" },
-                      ...hypothesisOptions.map((h) => ({ value: h, label: h })),
-                    ]}
+                    options={[{ value: "", label: "—" }, ...hypothesisOptions.map((h) => ({ value: h, label: h }))]}
                   />
                 ) : (
                   <Field
@@ -896,6 +957,11 @@ export default function Step16Page() {
           <div>
             <strong>Sessions:</strong> {counts.total} (Interview {counts.byKind.interview}, Observation {counts.byKind.observation}, Artifact {counts.byKind.artifact})
           </div>
+
+          <div>
+            <strong>Unmapped sessions:</strong> {counts.unmappedCount} ({counts.mappedPct}% mapped)
+          </div>
+
           <div>
             <strong>Avg severity:</strong> {counts.avgSeverity}
           </div>
@@ -930,6 +996,45 @@ export default function Step16Page() {
             )}
           </div>
         </div>
+      </Card>
+
+      {/* Minimum Evidence Pack (soft checklist) */}
+      <Card>
+        <h3 style={h3}>Minimum evidence pack (soft checklist)</h3>
+
+        {(() => {
+          const targetN = firstIntFromString(v2.sampling.sampleTarget) ?? 6;
+
+          const passSessions = counts.total >= targetN;
+          const passQuotes = counts.totalQuotes >= MIN_QUOTES;
+          const passWorkaround = counts.workaroundCount >= 1;
+          const passBaselineSignals = counts.baselineSignalCount >= MIN_BASELINE_SIGNALS;
+          const passConsent = Boolean(v2.consent.consentObtained);
+
+          return (
+            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+              <ChecklistRow label={`Sessions logged (target ≥ ${targetN})`} checked={passSessions} detail={`${counts.total} sessions`} />
+              <ChecklistRow label={`Quotes captured (target ≥ ${MIN_QUOTES})`} checked={passQuotes} detail={`${counts.totalQuotes} quotes`} />
+              <ChecklistRow
+                label="At least 1 workaround captured"
+                checked={passWorkaround}
+                detail={`${counts.workaroundCount} sessions with workaround`}
+              />
+              <ChecklistRow
+                label={`Baseline signals captured (target ≥ ${MIN_BASELINE_SIGNALS})`}
+                checked={passBaselineSignals}
+                detail={`${counts.baselineSignalCount} sessions with baseline signal`}
+              />
+              <ChecklistRow label="Consent addressed" checked={passConsent} detail={passConsent ? "Consent obtained ✅" : "Not marked yet"} />
+
+              {v2.consent.identifiableInfoStored ? (
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+                  ⚠ Identifiable info marked as stored. Make sure you actually mean that.
+                </div>
+              ) : null}
+            </div>
+          );
+        })()}
       </Card>
     </StepShell>
   );
@@ -974,12 +1079,7 @@ function Select(props: { label: string; value: string; onChange: (v: string) => 
   );
 }
 
-function SelectSimple(props: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) {
+function SelectSimple(props: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <label style={{ fontWeight: 700, display: "block" }}>{props.label}</label>
@@ -1013,12 +1113,7 @@ function Area(props: { label: string; value: string; onChange: (v: string) => vo
   return (
     <div style={{ marginBottom: 12 }}>
       <label style={{ fontWeight: 700, display: "block" }}>{props.label}</label>
-      <textarea
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-        placeholder={props.placeholder}
-        style={textareaStyle(props.minH ?? 110)}
-      />
+      <textarea value={props.value} onChange={(e) => props.onChange(e.target.value)} placeholder={props.placeholder} style={textareaStyle(props.minH ?? 110)} />
     </div>
   );
 }
@@ -1029,6 +1124,18 @@ function CheckboxRow(props: { label: string; checked: boolean; onChange: (v: boo
       <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} style={{ width: 18, height: 18 }} />
       <span style={{ fontSize: 13, opacity: 0.9 }}>{props.label}</span>
     </label>
+  );
+}
+
+function ChecklistRow(props: { label: string; checked: boolean; detail?: string }) {
+  return (
+    <div style={checklistRowStyle}>
+      <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <input type="checkbox" checked={props.checked} readOnly style={{ width: 18, height: 18 }} />
+        <span style={{ fontSize: 13, fontWeight: 800, opacity: 0.92 }}>{props.label}</span>
+      </label>
+      {props.detail ? <div style={{ fontSize: 12, opacity: 0.75 }}>{props.detail}</div> : null}
+    </div>
   );
 }
 
@@ -1111,4 +1218,22 @@ const sessionCardStyle: CSSProperties = {
   border: "1px solid #ddd",
   borderRadius: 12,
   padding: 14,
+};
+
+const badgeStyle: CSSProperties = {
+  display: "inline-block",
+  padding: "4px 10px",
+  border: "1px solid #ccc",
+  borderRadius: 999,
+  fontSize: 12,
+  fontWeight: 900,
+  opacity: 0.9,
+};
+
+const checklistRowStyle: CSSProperties = {
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  padding: 12,
+  display: "grid",
+  gap: 6,
 };
