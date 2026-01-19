@@ -35,7 +35,7 @@ type Step110Payload = {
   rationale: string;
   nextActions: string;
 
-  // auto snapshots (human-readable, no marker soup)
+  // auto snapshots (human-readable)
   autoEvidence: {
     step14: string;
     step16: string;
@@ -152,6 +152,25 @@ function firstIntFromString(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function decisionLabel(d: GateDecision): string {
+  if (d === "go") return "GO";
+  if (d === "stop") return "STOP";
+  return "ONE-ITERATION";
+}
+
+function decisionHint(d: GateDecision): string {
+  if (d === "go") return "Proceed. You’ve got enough signal to justify building/testing the next thing.";
+  if (d === "stop") return "Stop. Capture learning and don’t sink more time into a low-signal path.";
+  return "One more tight loop. Narrow the uncertainty, then decide again quickly.";
+}
+
+function trimPreview(s: string, n: number): string {
+  const t = (s || "").trim();
+  if (!t) return "";
+  if (t.length <= n) return t;
+  return t.slice(0, n).trimEnd() + "…";
+}
+
 /* ---------- Step 1.4 snapshot extraction ---------- */
 
 type MetricSummary = {
@@ -194,7 +213,14 @@ function extractStep14Summary(dossier: Dossier | null): Step14Summary {
   }
 
   if (!isObject(v)) {
-    return { ok: false, metrics: [], guardrails: "", measurementPlan: "", updatedAt, note: "Step 1.4 is not an object payload." };
+    return {
+      ok: false,
+      metrics: [],
+      guardrails: "",
+      measurementPlan: "",
+      updatedAt,
+      note: "Step 1.4 is not an object payload.",
+    };
   }
 
   const m1 = (v as any).leadMetric1 ?? null;
@@ -204,14 +230,14 @@ function extractStep14Summary(dossier: Dossier | null): Step14Summary {
   if (m1) metrics.push(normalizeMetric(m1));
   if (m2) metrics.push(normalizeMetric(m2));
 
-  // ✅ no more [object Object]
   const guardrails = toPrettyText((v as any).guardrails);
   const measurementPlan = toPrettyText((v as any).measurementPlan ?? (v as any).plan);
 
-  const ok =
-    metrics.some((m) => Boolean((m.name || m.definition || m.baseline || m.target || m.howMeasured || m.window).trim?.() ?? true)) ||
-    Boolean((guardrails || "").trim()) ||
-    Boolean((measurementPlan || "").trim());
+  const anyMetric = metrics.some((m) =>
+    Boolean((m.name || m.definition || m.baseline || m.target || m.howMeasured || m.window || "").trim())
+  );
+
+  const ok = anyMetric || Boolean((guardrails || "").trim()) || Boolean((measurementPlan || "").trim());
 
   return { ok, metrics, guardrails, measurementPlan, updatedAt };
 }
@@ -330,7 +356,6 @@ function extractStep16Summary(dossier: Dossier | null): Step16Summary {
 
   const version = String((v as any).version ?? "unknown");
 
-  // If not v2, we can’t summarize sessions reliably
   if (version !== "1.6-v2") {
     const ok =
       Boolean(String((v as any).targetParticipants ?? "").trim()) ||
@@ -492,7 +517,6 @@ function buildStep16SnapshotText(s16: Step16Summary): string {
 
 function foundMeaningfulStep16(s: Step16Summary): boolean {
   if (!s.ok) return false;
-  // meaningful if sessions exist OR at least some real plan/decision exists
   return s.totalSessions > 0;
 }
 
@@ -511,6 +535,70 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
       return false;
     }
   }
+}
+
+/* ---------- Decision banner ---------- */
+
+function DecisionBanner(props: {
+  decision: GateDecision;
+  totalScore: number;
+  rationalePreview: string;
+  has14: boolean;
+  has16: boolean;
+  s16?: Step16Summary;
+}) {
+  const label = decisionLabel(props.decision);
+  const hint = decisionHint(props.decision);
+
+  const chip = (text: string) => (
+    <span
+      style={{
+        border: "1px solid #ddd",
+        borderRadius: 999,
+        padding: "4px 10px",
+        fontSize: 12,
+        fontWeight: 800,
+        opacity: 0.9,
+      }}
+    >
+      {text}
+    </span>
+  );
+
+  const evChips: ReactNode[] = [];
+  evChips.push(chip(`Score ${props.totalScore}/50`));
+  evChips.push(chip(props.has14 ? "1.4 snapshot: saved" : "1.4 snapshot: none"));
+  evChips.push(chip(props.has16 ? "1.6 snapshot: saved" : "1.6 snapshot: none"));
+
+  if (props.s16 && props.s16.ok && props.s16.totalSessions > 0) {
+    evChips.push(chip(`Sessions: ${props.s16.totalSessions}`));
+    evChips.push(chip(`Mapped: ${props.s16.mappedPct}%`));
+    evChips.push(chip(`Avg sev: ${props.s16.avgSeverity}`));
+  }
+
+  return (
+    <div style={bannerStyle}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 900, letterSpacing: 0.6, opacity: 0.8 }}>GATE DECISION</div>
+          <div style={{ fontSize: 28, fontWeight: 1000, marginTop: 2 }}>{label}</div>
+          <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>{hint}</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>{evChips}</div>
+      </div>
+
+      {props.rationalePreview ? (
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.9 }}>
+          <strong>Rationale preview:</strong> {props.rationalePreview}
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>
+          <strong>Rationale preview:</strong> — (write it like someone will challenge you)
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ---------- Page ---------- */
@@ -540,6 +628,8 @@ export default function Step110Page() {
     );
   }, [value]);
 
+  const rationalePreview = useMemo(() => trimPreview(value.rationale || "", 240), [value.rationale]);
+
   function onPopulateFrom14() {
     setPopulateMsg14("");
     setCopyMsg14("");
@@ -556,7 +646,7 @@ export default function Step110Page() {
       autoEvidence: { ...value.autoEvidence, step14: snap },
       artifactsChecklist: {
         ...value.artifactsChecklist,
-        step14_metrics: value.artifactsChecklist.step14_metrics || true,
+        step14_metrics: true,
       },
     });
 
@@ -579,7 +669,7 @@ export default function Step110Page() {
       autoEvidence: { ...value.autoEvidence, step16: snap },
       artifactsChecklist: {
         ...value.artifactsChecklist,
-        step16_evidencePlanOrLog: value.artifactsChecklist.step16_evidencePlanOrLog || true,
+        step16_evidencePlanOrLog: true,
       },
     });
 
@@ -613,6 +703,9 @@ export default function Step110Page() {
   if (!isReady) return <Loading />;
   if (!dossierId || !dossier) return <NoDossier />;
 
+  const has14 = Boolean((value.autoEvidence?.step14 || "").trim());
+  const has16 = Boolean((value.autoEvidence?.step16 || "").trim());
+
   return (
     <StepShell
       stepId={STEP_ID}
@@ -622,6 +715,8 @@ export default function Step110Page() {
       dossierName={dossier.meta?.projectName}
       saveMsg={saveMsg}
     >
+      <DecisionBanner decision={value.decision} totalScore={totalScore} rationalePreview={rationalePreview} has14={has14} has16={has16} s16={s16} />
+
       <StepHelp title="How to use this">
         <div style={{ marginTop: 8, lineHeight: 1.6 }}>
           <div style={{ fontSize: 13, opacity: 0.9 }}>
@@ -854,6 +949,13 @@ function CheckboxRow(props: { label: string; checked: boolean; onChange: (v: boo
 }
 
 /* ---------- styles ---------- */
+
+const bannerStyle: CSSProperties = {
+  border: "1px solid #ddd",
+  borderRadius: 16,
+  padding: 16,
+  marginTop: 6,
+};
 
 const h3: CSSProperties = { marginTop: 0, marginBottom: 10, fontSize: 16, fontWeight: 800 };
 const h4: CSSProperties = { marginTop: 14, marginBottom: 8, fontSize: 14, fontWeight: 900, opacity: 0.9 };

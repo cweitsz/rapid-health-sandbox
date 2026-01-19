@@ -72,6 +72,8 @@ type ReviewerV1 = {
   overallNotes: string;
 };
 
+/* ---------- helpers ---------- */
+
 function safeGetDossier(id: string): Dossier | null {
   try {
     return getDossier(id);
@@ -194,6 +196,221 @@ function isStepComplete(stepId: string, raw: unknown): boolean {
   return isMeaningfulGeneric(val);
 }
 
+function isObject(x: unknown): x is Record<string, any> {
+  return typeof x === "object" && x !== null;
+}
+
+function unwrapStepValue(raw: any): any {
+  if (isObject(raw) && "value" in raw && "updatedAt" in raw) return (raw as any).value;
+  return raw;
+}
+
+function getStepValueFromDossier(dossier: Dossier | null, stepId: string): any {
+  if (!dossier) return null;
+  const raw = (dossier.steps as any)?.[stepId];
+  return unwrapStepValue(raw);
+}
+
+function getStepUpdatedAtFromDossier(dossier: Dossier | null, stepId: string): string | null {
+  if (!dossier) return null;
+  const raw = (dossier.steps as any)?.[stepId];
+  if (!raw) return null;
+  if (isObject(raw) && typeof raw.updatedAt === "string") return raw.updatedAt;
+  if (isObject(raw) && "value" in raw && typeof (raw as any).updatedAt === "string") return (raw as any).updatedAt;
+  if (isObject(raw) && isObject((raw as any).value) && typeof (raw as any).value.updatedAt === "string")
+    return (raw as any).value.updatedAt;
+  return null;
+}
+
+function trimPreview(s: string, n: number): string {
+  const t = (s || "").trim();
+  if (!t) return "";
+  if (t.length <= n) return t;
+  return t.slice(0, n).trimEnd() + "…";
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (!text.trim()) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      window.prompt("Copy this text:", text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/* ---------- Gate decision summary (from Step 1.10) ---------- */
+
+type GateDecision = "go" | "one-iteration" | "stop";
+
+type Step110Summary = {
+  ok: boolean;
+  updatedAt: string | null;
+  decision: GateDecision;
+  totalScore: number; // /50
+  rationale: string;
+  nextActions: string;
+  auto14: string;
+  auto16: string;
+  note?: string;
+};
+
+function decisionLabel(d: GateDecision): string {
+  if (d === "go") return "GO";
+  if (d === "stop") return "STOP";
+  return "ONE-ITERATION";
+}
+
+function extractStep110Summary(dossier: Dossier | null): Step110Summary {
+  const v = getStepValueFromDossier(dossier, "1-10");
+  const updatedAt = getStepUpdatedAtFromDossier(dossier, "1-10");
+
+  const empty: Step110Summary = {
+    ok: false,
+    updatedAt,
+    decision: "one-iteration",
+    totalScore: 0,
+    rationale: "",
+    nextActions: "",
+    auto14: "",
+    auto16: "",
+    note: "Step 1.10 is empty.",
+  };
+
+  if (!v) return empty;
+  if (!isObject(v)) return { ...empty, note: "Step 1.10 payload is not an object." };
+
+  const decisionRaw = String((v as any).decision ?? "one-iteration") as GateDecision;
+  const decision: GateDecision = decisionRaw === "go" || decisionRaw === "stop" || decisionRaw === "one-iteration" ? decisionRaw : "one-iteration";
+
+  const totalScore =
+    Number((v as any).evidenceQuality ?? 0) +
+    Number((v as any).severity ?? 0) +
+    Number((v as any).willingnessToPay ?? 0) +
+    Number((v as any).feasibility ?? 0) +
+    Number((v as any).differentiation ?? 0);
+
+  const rationale = String((v as any).rationale ?? "");
+  const nextActions = String((v as any).nextActions ?? "");
+  const autoEvidence = isObject((v as any).autoEvidence) ? (v as any).autoEvidence : {};
+  const auto14 = String(autoEvidence.step14 ?? "");
+  const auto16 = String(autoEvidence.step16 ?? "");
+
+  const ok = Boolean((rationale || "").trim()) || Boolean((nextActions || "").trim()) || totalScore > 0 || Boolean((auto14 || "").trim()) || Boolean((auto16 || "").trim());
+
+  return { ok, updatedAt, decision, totalScore, rationale, nextActions, auto14, auto16 };
+}
+
+/* ---------- Light live summaries from 1.4 and 1.6 (for print-friendly output) ---------- */
+
+function extract14Titles(dossier: Dossier | null): { m1: string; m2: string } {
+  const v = getStepValueFromDossier(dossier, "1-4");
+  if (!v || !isObject(v)) return { m1: "", m2: "" };
+  const m1 = isObject((v as any).leadMetric1) ? String((v as any).leadMetric1.name ?? "").trim() : "";
+  const m2 = isObject((v as any).leadMetric2) ? String((v as any).leadMetric2.name ?? "").trim() : "";
+  return { m1, m2 };
+}
+
+function extract16Counts(dossier: Dossier | null): { note: string; sessions: number; mappedPct: number; avgSeverity: number; topPains: Array<[string, number]> } {
+  const v = getStepValueFromDossier(dossier, "1-6");
+  if (!v || !isObject(v)) return { note: "—", sessions: 0, mappedPct: 0, avgSeverity: 0, topPains: [] };
+
+  const version = String((v as any).version ?? "unknown");
+  if (version !== "1.6-v2") return { note: "Step 1.6 not v2 (open Step 1.6 once to migrate).", sessions: 0, mappedPct: 0, avgSeverity: 0, topPains: [] };
+
+  const sessions: any[] = Array.isArray((v as any).sessions) ? (v as any).sessions : [];
+  let unmapped = 0;
+  let sevSum = 0;
+  let sevN = 0;
+  const painCounts: Record<string, number> = {};
+
+  for (const s of sessions) {
+    if (!isObject(s)) continue;
+
+    const mapped = Array.isArray((s as any).mappedMetrics) ? (s as any).mappedMetrics.map(String).filter(Boolean) : [];
+    if (mapped.length === 0) unmapped += 1;
+
+    const sev = Number((s as any).severity010 ?? 0);
+    if (Number.isFinite(sev)) {
+      sevSum += Math.max(0, Math.min(10, sev));
+      sevN += 1;
+    }
+
+    const pains = [String((s as any).pain1 ?? ""), String((s as any).pain2 ?? ""), String((s as any).pain3 ?? "")]
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => p.toLowerCase());
+
+    for (const p of pains) painCounts[p] = (painCounts[p] ?? 0) + 1;
+  }
+
+  const total = sessions.length;
+  const mappedPct = total ? Math.round(((total - unmapped) / total) * 100) : 0;
+  const avgSeverity = sevN ? Math.round((sevSum / sevN) * 10) / 10 : 0;
+  const topPains = Object.entries(painCounts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  return { note: "", sessions: total, mappedPct, avgSeverity, topPains };
+}
+
+function buildPrintSummary(dossier: Dossier, dossierId: string, s110: Step110Summary): string {
+  const lines: string[] = [];
+  lines.push(`Dossier summary`);
+  lines.push(`Project: ${dossier.meta?.projectName || "Untitled dossier"}`);
+  lines.push(`Dossier ID: ${dossierId}`);
+  lines.push(`Updated: ${formatDateTime(dossier.updatedAt)}`);
+  lines.push("");
+
+  lines.push("1.1 Problem");
+  lines.push(dossier.meta?.oneLineProblem ? String(dossier.meta.oneLineProblem).trim() : "—");
+  lines.push("");
+
+  const m14 = extract14Titles(dossier);
+  lines.push("1.4 Lead metrics (names)");
+  lines.push(`- Lead metric 1: ${m14.m1 || "—"}`);
+  lines.push(`- Lead metric 2: ${m14.m2 || "—"}`);
+  lines.push("");
+
+  const c16 = extract16Counts(dossier);
+  lines.push("1.6 Evidence (live counts)");
+  if (c16.note) {
+    lines.push(c16.note);
+  } else {
+    lines.push(`- Sessions: ${c16.sessions}`);
+    lines.push(`- Mapped: ${c16.mappedPct}%`);
+    lines.push(`- Avg severity: ${c16.avgSeverity}`);
+    lines.push(`- Top pains: ${c16.topPains.length ? c16.topPains.map(([p, n]) => `${p} (${n})`).join(", ") : "—"}`);
+  }
+  lines.push("");
+
+  lines.push("1.10 Gate decision");
+  lines.push(`Decision: ${decisionLabel(s110.decision)} · Score: ${s110.totalScore}/50`);
+  if (s110.updatedAt) lines.push(`Last updated: ${formatDateTime(s110.updatedAt)}`);
+  lines.push("");
+  lines.push("Rationale:");
+  lines.push(s110.rationale.trim() ? s110.rationale.trim() : "—");
+  lines.push("");
+  lines.push("Next actions:");
+  lines.push(s110.nextActions.trim() ? s110.nextActions.trim() : "—");
+  lines.push("");
+
+  lines.push("1.10 Saved evidence snapshots");
+  lines.push("");
+  lines.push("Snapshot from 1.4:");
+  lines.push(s110.auto14.trim() ? s110.auto14.trim() : "—");
+  lines.push("");
+  lines.push("Snapshot from 1.6:");
+  lines.push(s110.auto16.trim() ? s110.auto16.trim() : "—");
+
+  return lines.join("\n");
+}
+
+/* ---------- Page ---------- */
+
 export default function ReviewPage() {
   const sp = useSearchParams();
 
@@ -212,6 +429,9 @@ export default function ReviewPage() {
   const reviewTimerRef = useRef<number | null>(null);
 
   const [copyMsg, setCopyMsg] = useState<string>("");
+
+  // new: summary copy feedback
+  const [copySummaryMsg, setCopySummaryMsg] = useState<string>("");
 
   useEffect(() => {
     if (!dossierId) {
@@ -265,6 +485,15 @@ export default function ReviewPage() {
     return (Object.values(review.scores) as number[]).reduce((a, b) => a + b, 0);
   }, [review.scores]);
 
+  // new: gate summary
+  const gate = useMemo(() => extractStep110Summary(dossier ?? null), [dossier]);
+  const gatePreview = useMemo(() => trimPreview(gate.rationale, 260), [gate.rationale]);
+
+  const printSummaryText = useMemo(() => {
+    if (!dossierId || !dossier) return "";
+    return buildPrintSummary(dossier, dossierId, gate);
+  }, [dossier, dossierId, gate]);
+
   useEffect(() => {
     if (!dossierId) return;
     if (!isReady) return;
@@ -309,8 +538,6 @@ export default function ReviewPage() {
       }
     };
   }, [review, dossierId, isReady]);
-
-  const homeHref = "/";
 
   const sprintHref = useMemo(() => {
     return (sprint: "A" | "B" | "C") => {
@@ -369,6 +596,12 @@ export default function ReviewPage() {
 
     const safeName = (dossier?.meta?.projectName || "dossier").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
     downloadTextFile(`${safeName}-${dossierId}.json`, raw);
+  }
+
+  async function onCopySummary() {
+    setCopySummaryMsg("");
+    const ok = await copyTextToClipboard(printSummaryText || "");
+    setCopySummaryMsg(ok ? "Copied summary" : "Copy failed");
   }
 
   if (!isReady) {
@@ -446,6 +679,52 @@ export default function ReviewPage() {
       </div>
 
       {copyMsg ? <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>{copyMsg}</div> : null}
+
+      {/* NEW: Gate decision at the top */}
+      <Section title="Gate decision (from Step 1.10)">
+        {gate.ok ? (
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>Decision</div>
+                <div style={{ fontSize: 26, fontWeight: 1000 }}>{decisionLabel(gate.decision)}</div>
+                <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
+                  Score: <strong>{gate.totalScore}/50</strong>
+                  {gate.updatedAt ? ` · Updated ${formatDateTime(gate.updatedAt)}` : ""}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <Link href={stepHref("1-10")} style={linkBtnStyle}>
+                  Open 1.10 →
+                </Link>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 13, opacity: 0.9 }}>
+              <strong>Rationale preview:</strong> {gatePreview || "—"}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, opacity: 0.85 }}>
+            No meaningful Step 1.10 decision yet.{" "}
+            <Link href={stepHref("1-10")} style={{ textDecoration: "underline" }}>
+              Open Step 1.10 →
+            </Link>
+          </div>
+        )}
+      </Section>
+
+      {/* NEW: Print-friendly dossier summary */}
+      <Section title="Print-friendly dossier summary">
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <button type="button" style={btnStyle} onClick={onCopySummary}>
+            Copy summary
+          </button>
+          {copySummaryMsg ? <span style={{ fontSize: 12, opacity: 0.75 }}>{copySummaryMsg}</span> : null}
+        </div>
+        <pre style={summaryPreStyle}>{printSummaryText}</pre>
+      </Section>
 
       <Section title="Reviewer mode">
         <div
@@ -579,6 +858,8 @@ export default function ReviewPage() {
   );
 }
 
+/* ---------- UI bits ---------- */
+
 function Section(props: { title: string; children: React.ReactNode }) {
   return (
     <div style={{ marginTop: 22, border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
@@ -649,6 +930,17 @@ const selectStyle: React.CSSProperties = {
   color: "inherit",
 };
 
+const summaryPreStyle: React.CSSProperties = {
+  marginTop: 12,
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  padding: 12,
+  whiteSpace: "pre-wrap",
+  fontSize: 12,
+  lineHeight: 1.55,
+  overflowX: "auto",
+};
+
 function textareaStyle(minHeight: number): React.CSSProperties {
   return {
     marginTop: 8,
@@ -663,3 +955,4 @@ function textareaStyle(minHeight: number): React.CSSProperties {
     boxSizing: "border-box",
   };
 }
+
