@@ -1,251 +1,539 @@
+// src/app/steps/1-10/page.tsx
 "use client";
 
 import type { CSSProperties, ReactNode } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
 import StepShell from "@/components/StepShell";
 import StepHelp from "@/components/StepHelp";
 import { useDossierStep } from "@/hooks/useDossierStep";
-import { exportDossier, downloadTextFile } from "@/lib/storage";
-
-type GateDecision = "go" | "iterate" | "stop";
-
-type Step110Payload = {
-  evidenceQuality: number; // 0-10
-  severity: number; // 0-10
-  willingnessToPay: number; // 0-10
-  feasibility: number; // 0-10
-  differentiation: number; // 0-10
-
-  artifactsChecklist: {
-    step11: boolean;
-    step12: boolean;
-    step13: boolean;
-    step14: boolean;
-    step15: boolean;
-    step16: boolean;
-    step17: boolean;
-    step18: boolean;
-    step19: boolean;
-  };
-
-  decision: GateDecision;
-  rationale: string;
-  nextActions: string;
-  updatedAt?: string;
-};
+import type { Dossier } from "@/lib/dossier";
+import { withDossier } from "@/lib/dossierHref";
 
 const STEP_ID = "1-10";
 
-export default function Step110Page() {
-  const { isReady, dossierId, dossier, value, setValue, saveMsg } = useDossierStep<Step110Payload>(
-    STEP_ID,
-    {
-      evidenceQuality: 0,
-      severity: 0,
-      willingnessToPay: 0,
-      feasibility: 0,
-      differentiation: 0,
-      artifactsChecklist: {
-        step11: false,
-        step12: false,
-        step13: false,
-        step14: false,
-        step15: false,
-        step16: false,
-        step17: false,
-        step18: false,
-        step19: false,
-      },
-      decision: "iterate",
-      rationale: "",
-      nextActions: "",
-    }
-  );
+// Keep these aligned with Step 1.6’s “soft checklist”
+const MIN_QUOTES = 10;
+const MIN_BASELINE_SIGNALS = 2;
 
-  // Hook-safe: no hooks below conditional returns.
-  const total =
-    (value.evidenceQuality || 0) +
-    (value.severity || 0) +
-    (value.willingnessToPay || 0) +
-    (value.feasibility || 0) +
-    (value.differentiation || 0);
+type GateDecision = "go" | "one-iteration" | "stop";
+
+type Step110Payload = {
+  decision: GateDecision;
+
+  // 0–10 (you can treat as 0–2 if you want, this doesn’t enforce anything)
+  evidenceQuality: number;
+  severity: number;
+  willingnessToPay: number;
+  feasibility: number;
+  differentiation: number;
+
+  artifactsChecklist: Record<string, boolean>;
+
+  rationale: string;
+  nextActions: string;
+
+  updatedAt?: string;
+};
+
+const DEFAULT_PAYLOAD: Step110Payload = {
+  decision: "one-iteration",
+  evidenceQuality: 0,
+  severity: 0,
+  willingnessToPay: 0,
+  feasibility: 0,
+  differentiation: 0,
+  artifactsChecklist: {
+    step11_problem: false,
+    step12_stakeholders: false,
+    step13_workarounds: false,
+    step14_metrics: false,
+    step15_hypotheses: false,
+    step16_evidencePlanOrLog: false,
+    step17_beforeAfter: false,
+    step18_alternatives: false,
+    step19_valueHook: false,
+  },
+  rationale: "",
+  nextActions: "",
+};
+
+function isObject(x: unknown): x is Record<string, any> {
+  return typeof x === "object" && x !== null;
+}
+
+function unwrapStepValue(raw: any): any {
+  if (isObject(raw) && "value" in raw && "updatedAt" in raw) return (raw as any).value;
+  return raw;
+}
+
+function getStepValue(dossier: Dossier | null, stepId: string): any {
+  if (!dossier) return null;
+  const raw = (dossier.steps as any)?.[stepId];
+  return unwrapStepValue(raw);
+}
+
+function getStepUpdatedAt(dossier: Dossier | null, stepId: string): string | null {
+  if (!dossier) return null;
+  const raw = (dossier.steps as any)?.[stepId];
+  if (!raw) return null;
+  if (isObject(raw) && typeof raw.updatedAt === "string") return raw.updatedAt;
+  if (isObject(raw) && "value" in raw && typeof (raw as any).updatedAt === "string") return (raw as any).updatedAt;
+  if (isObject(raw) && isObject((raw as any).value) && typeof (raw as any).value.updatedAt === "string") return (raw as any).value.updatedAt;
+  return null;
+}
+
+function firstIntFromString(s: string): number | null {
+  const m = (s || "").match(/(\d+)/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/* ---------- Step 1.4 summary extraction ---------- */
+
+type MetricSummary = {
+  name: string;
+  baseline: string;
+  target: string;
+  howMeasured: string;
+  window: string;
+  definition?: string;
+};
+
+type Step14Summary = {
+  ok: boolean;
+  metrics: MetricSummary[];
+  guardrails: string;
+  measurementPlan: string;
+  updatedAt: string | null;
+  note?: string;
+};
+
+function normalizeMetric(raw: any): MetricSummary {
+  const obj = isObject(raw) ? raw : {};
+  return {
+    name: String(obj.name ?? "").trim(),
+    baseline: String(obj.baseline ?? "").trim(),
+    target: String(obj.target ?? "").trim(),
+    howMeasured: String(obj.howMeasured ?? obj.method ?? "").trim(),
+    window: String(obj.window ?? obj.frequency ?? "").trim(),
+    definition: String(obj.definition ?? "").trim() || undefined,
+  };
+}
+
+function extractStep14Summary(dossier: Dossier | null): Step14Summary {
+  const v = getStepValue(dossier, "1-4");
+  const updatedAt = getStepUpdatedAt(dossier, "1-4");
+
+  if (!v) {
+    return { ok: false, metrics: [], guardrails: "", measurementPlan: "", updatedAt, note: "Step 1.4 is empty." };
+  }
+
+  // Common shapes:
+  // v1 you showed: { leadMetric1: {name, baseline, target, howMeasured, window}, leadMetric2: {...}, guardrails, measurementPlan }
+  // v2 variant: might add definition or different keys. We handle best-effort.
+  if (!isObject(v)) {
+    return { ok: false, metrics: [], guardrails: "", measurementPlan: "", updatedAt, note: "Step 1.4 is not an object payload." };
+  }
+
+  const m1 = v.leadMetric1 ?? null;
+  const m2 = v.leadMetric2 ?? null;
+
+  const metrics: MetricSummary[] = [];
+  if (m1) metrics.push(normalizeMetric(m1));
+  if (m2) metrics.push(normalizeMetric(m2));
+
+  const guardrails = String(v.guardrails ?? "").trim();
+  const measurementPlan = String(v.measurementPlan ?? v.plan ?? "").trim();
+
+  const ok = metrics.some((m) => m.name || m.baseline || m.target || m.howMeasured || m.window) || !!guardrails || !!measurementPlan;
+
+  return {
+    ok,
+    metrics,
+    guardrails,
+    measurementPlan,
+    updatedAt,
+  };
+}
+
+/* ---------- Step 1.6 summary extraction ---------- */
+
+type Step16Summary = {
+  ok: boolean;
+  version: string;
+  updatedAt: string | null;
+
+  totalSessions: number;
+  byKind: { interview: number; observation: number; artifact: number };
+
+  avgSeverity: number;
+
+  unmappedCount: number;
+  mappedPct: number;
+
+  totalQuotes: number;
+  baselineSignalCount: number;
+  workaroundCount: number;
+
+  metricCounts: Record<string, number>;
+  topPains: Array<[string, number]>;
+
+  evidencePack: {
+    targetN: number;
+    passSessions: boolean;
+    passQuotes: boolean;
+    passWorkaround: boolean;
+    passBaselineSignals: boolean;
+    passConsent: boolean;
+    identifiableInfoStored: boolean;
+  };
+
+  note?: string;
+};
+
+function extractStep16Summary(dossier: Dossier | null): Step16Summary {
+  const v = getStepValue(dossier, "1-6");
+  const updatedAt = getStepUpdatedAt(dossier, "1-6");
+
+  // Default empty summary
+  const empty: Step16Summary = {
+    ok: false,
+    version: "unknown",
+    updatedAt,
+
+    totalSessions: 0,
+    byKind: { interview: 0, observation: 0, artifact: 0 },
+    avgSeverity: 0,
+
+    unmappedCount: 0,
+    mappedPct: 0,
+
+    totalQuotes: 0,
+    baselineSignalCount: 0,
+    workaroundCount: 0,
+
+    metricCounts: {},
+    topPains: [],
+
+    evidencePack: {
+      targetN: 6,
+      passSessions: false,
+      passQuotes: false,
+      passWorkaround: false,
+      passBaselineSignals: false,
+      passConsent: false,
+      identifiableInfoStored: false,
+    },
+
+    note: "Step 1.6 is empty or not migrated.",
+  };
+
+  if (!v) return empty;
+  if (!isObject(v)) return { ...empty, note: "Step 1.6 payload is not an object." };
+
+  const version = String((v as any).version ?? "unknown");
+  if (version !== "1.6-v2") {
+    // Still show something, but we can’t reliably compute session-based evidence
+    const consentScript = isObject((v as any).consent) ? String((v as any).consent.scriptOrNotes ?? "") : "";
+    const ok = Boolean(consentScript.trim()) || Boolean(String((v as any).targetParticipants ?? "").trim());
+    return {
+      ...empty,
+      ok,
+      version,
+      note: "Step 1.6 isn’t on v2, so session summary is unavailable. (Migrate by opening Step 1.6 and saving once.)",
+    };
+  }
+
+  const sessions: any[] = Array.isArray((v as any).sessions) ? (v as any).sessions : [];
+  const byKind = { interview: 0, observation: 0, artifact: 0 };
+
+  let sevSum = 0;
+  let sevN = 0;
+
+  let unmappedCount = 0;
+  let totalQuotes = 0;
+  let baselineSignalCount = 0;
+  let workaroundCount = 0;
+
+  const metricCounts: Record<string, number> = {};
+  const painCounts: Record<string, number> = {};
+
+  for (const s of sessions) {
+    if (!isObject(s)) continue;
+
+    const kind = String((s as any).kind ?? "interview") as keyof typeof byKind;
+    if (kind in byKind) (byKind as any)[kind] += 1;
+
+    const mapped = Array.isArray((s as any).mappedMetrics) ? (s as any).mappedMetrics.map(String).filter(Boolean) : [];
+    if (mapped.length === 0) unmappedCount += 1;
+
+    const quotes = [String((s as any).quote1 ?? ""), String((s as any).quote2 ?? ""), String((s as any).quote3 ?? "")]
+      .map((q) => q.trim())
+      .filter(Boolean);
+    totalQuotes += quotes.length;
+
+    if (String((s as any).baselineSignal ?? "").trim()) baselineSignalCount += 1;
+    if (String((s as any).workaround ?? "").trim()) workaroundCount += 1;
+
+    const sev = Number((s as any).severity010 ?? 0);
+    if (Number.isFinite(sev)) {
+      sevSum += Math.max(0, Math.min(10, sev));
+      sevN += 1;
+    }
+
+    for (const mk of mapped) metricCounts[mk] = (metricCounts[mk] ?? 0) + 1;
+
+    const pains = [String((s as any).pain1 ?? ""), String((s as any).pain2 ?? ""), String((s as any).pain3 ?? "")]
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => p.toLowerCase());
+
+    for (const p of pains) painCounts[p] = (painCounts[p] ?? 0) + 1;
+  }
+
+  const topPains = Object.entries(painCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
+
+  const avgSeverity = sevN ? Math.round((sevSum / sevN) * 10) / 10 : 0;
+
+  const totalSessions = sessions.length;
+  const mappedCount = Math.max(0, totalSessions - unmappedCount);
+  const mappedPct = totalSessions ? Math.round((mappedCount / totalSessions) * 100) : 0;
+
+  const sampleTargetStr = isObject((v as any).sampling) ? String((v as any).sampling.sampleTarget ?? "") : "";
+  const targetN = firstIntFromString(sampleTargetStr) ?? 6;
+
+  const consentObtained = Boolean(isObject((v as any).consent) ? (v as any).consent.consentObtained : false);
+  const identifiableInfoStored = Boolean(isObject((v as any).consent) ? (v as any).consent.identifiableInfoStored : false);
+
+  const evidencePack = {
+    targetN,
+    passSessions: totalSessions >= targetN,
+    passQuotes: totalQuotes >= MIN_QUOTES,
+    passWorkaround: workaroundCount >= 1,
+    passBaselineSignals: baselineSignalCount >= MIN_BASELINE_SIGNALS,
+    passConsent: consentObtained,
+    identifiableInfoStored,
+  };
+
+  const ok =
+    totalSessions > 0 ||
+    String((v as any).targetParticipants ?? "").trim().length > 0 ||
+    String((v as any).decisionRule ?? "").trim().length > 0;
+
+  return {
+    ok,
+    version,
+    updatedAt,
+
+    totalSessions,
+    byKind,
+    avgSeverity,
+
+    unmappedCount,
+    mappedPct,
+
+    totalQuotes,
+    baselineSignalCount,
+    workaroundCount,
+
+    metricCounts,
+    topPains,
+
+    evidencePack,
+  };
+}
+
+/* ---------- Page ---------- */
+
+export default function Step110Page() {
+  const { isReady, dossierId, dossier, value, setValue, saveMsg } = useDossierStep<Step110Payload>(STEP_ID, DEFAULT_PAYLOAD);
+
+  const s14 = useMemo(() => extractStep14Summary(dossier ?? null), [dossier]);
+  const s16 = useMemo(() => extractStep16Summary(dossier ?? null), [dossier]);
+
+  const step14Href = useMemo(() => (dossierId ? withDossier("/steps/1-4", dossierId) : "/intake"), [dossierId]);
+  const step16Href = useMemo(() => (dossierId ? withDossier("/steps/1-6", dossierId) : "/intake"), [dossierId]);
+
+  const totalScore = useMemo(() => {
+    const v = value;
+    return (
+      Number(v.evidenceQuality || 0) +
+      Number(v.severity || 0) +
+      Number(v.willingnessToPay || 0) +
+      Number(v.feasibility || 0) +
+      Number(v.differentiation || 0)
+    );
+  }, [value]);
 
   if (!isReady) return <Loading />;
   if (!dossierId || !dossier) return <NoDossier />;
-
-  const did = dossierId;
-  const dos = dossier;
-  const a = value.artifactsChecklist;
-
-  function exportJson() {
-    const raw = exportDossier(did);
-    if (!raw) return;
-
-    const safeName = (dos.meta?.projectName || "dossier")
-      .replace(/[^a-z0-9-_]+/gi, "-")
-      .toLowerCase();
-
-    downloadTextFile(`${safeName}-${did}.json`, raw);
-  }
 
   return (
     <StepShell
       stepId={STEP_ID}
       title="Step 1.10: Gate Review"
-      subtitle="Score, decide: Go / One-iteration / Stop. Keep it evidence-first - don't let your own biases creep in."
-      dossierId={did}
-      dossierName={dos.meta?.projectName}
+      subtitle="Make the decision. This page pulls evidence from 1.4 and 1.6 so you don’t retype your own work."
+      dossierId={dossierId}
+      dossierName={dossier.meta?.projectName}
       saveMsg={saveMsg}
     >
-        <StepHelp title="How to use this gate without lying to yourself">
+      <StepHelp title="How to use this">
         <div style={{ marginTop: 8, lineHeight: 1.6 }}>
-            <div style={{ fontSize: 13, opacity: 0.9 }}>
-            This is the decision step. Time to put the honesty hat on and evaluate your progress so far.
-            If evidence is weak, everything is weak. No exceptions & no free points just because YOU like your idea.
-            </div>
-
-            <ul style={{ marginTop: 10, paddingLeft: 18 }}>
-            <li>
-                Scores are <strong>0–10</strong>. Use <strong>0 / 5 / 8–10</strong> anchors below so your numbers mean something.
-            </li>
-            <li>
-                <strong>One-iteration</strong> means one tight loop (≤2 days). If you’re on loop #3, call it what it is: <strong>Stop</strong>.
-            </li>
-            <li>
-                The artifacts checklist is “usable evidence exists”, not “I typed text into a box”.
-            </li>
-            <li>
-                Rationale must cite specifics: <strong>counts, quotes, observations</strong>, what moved vs baseline, and what didn’t.
-            </li>
-            </ul>
-
-            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-            <strong>Scoring anchors (use these)</strong>
-            <ul style={{ marginTop: 6, paddingLeft: 18, lineHeight: 1.6 }}>
-                <li>
-                <strong>Evidence quality:</strong> 0 = none; 5 = some interviews/notes but inconsistent; 8–10 = repeatable pattern + artifacts (quotes, counts, screenshots) + clear pass/fail.
-                </li>
-                <li>
-                <strong>Problem severity:</strong> 0 = mild annoyance; 5 = regular friction with workarounds; 8–10 = frequent + costly/risky + users change behaviour to cope.
-                </li>
-                <li>
-                <strong>Willingness to pay:</strong> 0 = “nice idea”; 5 = interest but unclear budget/owner; 8–10 = buyer named + budget path + urgency + explicit “we’d pay if…”.
-                </li>
-                <li>
-                <strong>Feasibility:</strong> 0 = fantasy; 5 = plausible with caveats; 8–10 = clear scope + constraints handled + simple first version possible fast.
-                </li>
-                <li>
-                <strong>Differentiation:</strong> 0 = copycat; 5 = slightly better; 8–10 = clear unfair advantage tied to workflow + measurable outcome that alternatives can’t match.
-                </li>
-            </ul>
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-            <strong>Decision rule of thumb</strong>
-            <ul style={{ marginTop: 6, paddingLeft: 18, lineHeight: 1.6 }}>
-                <li><strong>Go:</strong> Evidence quality ≥ 7 and total ≥ 35, with no “dealbreaker” constraints.</li>
-                <li><strong>One-iteration:</strong> Exactly one missing unknown you can test in ≤2 days.</li>
-                <li><strong>Stop:</strong> Evidence quality ≤ 4 after attempts, or buyer/willingness-to-pay is consistently weak, or iteration count exceeds 2.</li>
-            </ul>
-            </div>
-        </div>
-        </StepHelp>
-
-
-      <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Rubric (0–10 each)</h3>
-          <button type="button" onClick={exportJson} style={btnStyle}>
-            Export dossier JSON
-          </button>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <ScoreInput
-            label="Evidence quality"
-            value={value.evidenceQuality}
-            onChange={(n) => setValue({ ...value, evidenceQuality: n })}
-          />
-          <ScoreInput
-            label="Problem severity"
-            value={value.severity}
-            onChange={(n) => setValue({ ...value, severity: n })}
-          />
-          <ScoreInput
-            label="Willingness to pay"
-            value={value.willingnessToPay}
-            onChange={(n) => setValue({ ...value, willingnessToPay: n })}
-          />
-          <ScoreInput
-            label="Feasibility"
-            value={value.feasibility}
-            onChange={(n) => setValue({ ...value, feasibility: n })}
-          />
-          <ScoreInput
-            label="Differentiation"
-            value={value.differentiation}
-            onChange={(n) => setValue({ ...value, differentiation: n })}
-          />
-
-          <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 12 }}>
-            <div style={{ fontWeight: 700 }}>Total</div>
-            <div style={{ marginTop: 8, fontSize: 28, fontWeight: 900 }}>{total} / 50</div>
-            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{saveMsg}</div>
+          <div style={{ fontSize: 13, opacity: 0.9 }}>
+            This is where optimism goes to die. You’re not “deciding”, you’re applying a rule to evidence.
           </div>
+          <ul style={{ marginTop: 10, paddingLeft: 18 }}>
+            <li>Read the pulled summaries first (1.4 metrics, 1.6 evidence pack).</li>
+            <li>Score only after you’ve seen what the evidence actually says.</li>
+            <li>Write rationale that cites counts, quotes, or artifacts, not vibes.</li>
+            <li>“One-iteration” should be a tight loop (≤2 days). More than 2 loops = Stop.</li>
+          </ul>
+        </div>
+      </StepHelp>
+
+      {/* Pulled from Step 1.4 */}
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+          <h3 style={h3}>Pulled from Step 1.4 (Measurable Indicators)</h3>
+          <Link href={step14Href} style={linkStyle}>
+            Open 1.4 →
+          </Link>
         </div>
 
-        <Divider />
+        {s14.updatedAt ? <div style={metaLine}>Last updated: {formatDateTime(s14.updatedAt)}</div> : null}
 
-        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Artifacts checklist</h3>
-        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <Check
-            label="1.1 done"
-            checked={a.step11}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step11: x } })}
-          />
-          <Check
-            label="1.2 done"
-            checked={a.step12}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step12: x } })}
-          />
-          <Check
-            label="1.3 done"
-            checked={a.step13}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step13: x } })}
-          />
-          <Check
-            label="1.4 done"
-            checked={a.step14}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step14: x } })}
-          />
-          <Check
-            label="1.5 done"
-            checked={a.step15}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step15: x } })}
-          />
-          <Check
-            label="1.6 done"
-            checked={a.step16}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step16: x } })}
-          />
-          <Check
-            label="1.7 done"
-            checked={a.step17}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step17: x } })}
-          />
-          <Check
-            label="1.8 done"
-            checked={a.step18}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step18: x } })}
-          />
-          <Check
-            label="1.9 done"
-            checked={a.step19}
-            onChange={(x) => setValue({ ...value, artifactsChecklist: { ...a, step19: x } })}
-          />
+        {!s14.ok ? (
+          <div style={warnText}>⚠ {s14.note ?? "No usable Step 1.4 data found."}</div>
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "grid", gap: 10 }}>
+              {(s14.metrics.length ? s14.metrics : [{ name: "", baseline: "", target: "", howMeasured: "", window: "" }]).map((m, idx) => (
+                <div key={idx} style={panelStyle}>
+                  <div style={{ fontWeight: 900 }}>Lead metric {idx + 1}</div>
+                  <div style={{ marginTop: 8, display: "grid", gap: 6, fontSize: 13, opacity: 0.9 }}>
+                    <div><strong>Name:</strong> {m.name || <span style={{ opacity: 0.6 }}>—</span>}</div>
+                    {m.definition ? <div><strong>Definition:</strong> {m.definition}</div> : null}
+                    <div><strong>Baseline:</strong> {m.baseline || <span style={{ opacity: 0.6 }}>—</span>}</div>
+                    <div><strong>Target:</strong> {m.target || <span style={{ opacity: 0.6 }}>—</span>}</div>
+                    <div><strong>How measured:</strong> {m.howMeasured || <span style={{ opacity: 0.6 }}>—</span>}</div>
+                    <div><strong>Window / frequency:</strong> {m.window || <span style={{ opacity: 0.6 }}>—</span>}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={panelStyle}>
+              <div style={{ fontWeight: 900 }}>Guardrails</div>
+              <div style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 13, opacity: 0.9 }}>
+                {s14.guardrails || "—"}
+              </div>
+            </div>
+
+            <div style={panelStyle}>
+              <div style={{ fontWeight: 900 }}>Measurement plan</div>
+              <div style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 13, opacity: 0.9 }}>
+                {s14.measurementPlan || "—"}
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Pulled from Step 1.6 */}
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+          <h3 style={h3}>Pulled from Step 1.6 (Evidence Summary)</h3>
+          <Link href={step16Href} style={linkStyle}>
+            Open 1.6 →
+          </Link>
         </div>
 
-        <Divider />
+        {s16.updatedAt ? <div style={metaLine}>Last updated: {formatDateTime(s16.updatedAt)} · Payload: <code>{s16.version}</code></div> : null}
+
+        {!s16.ok ? (
+          <div style={warnText}>⚠ {s16.note ?? "No usable Step 1.6 data found."}</div>
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={panelStyle}>
+              <div style={{ fontWeight: 900 }}>Counts</div>
+              <div style={{ marginTop: 8, display: "grid", gap: 6, fontSize: 13, opacity: 0.9 }}>
+                <div>
+                  <strong>Sessions:</strong> {s16.totalSessions} (Interview {s16.byKind.interview}, Observation {s16.byKind.observation}, Artifact{" "}
+                  {s16.byKind.artifact})
+                </div>
+                <div>
+                  <strong>Mapped:</strong> {Math.max(0, s16.totalSessions - s16.unmappedCount)}/{s16.totalSessions} ({s16.mappedPct}%)
+                </div>
+                <div>
+                  <strong>Unmapped sessions:</strong> {s16.unmappedCount}
+                </div>
+                <div>
+                  <strong>Avg severity:</strong> {s16.avgSeverity}
+                </div>
+                <div>
+                  <strong>Quotes captured:</strong> {s16.totalQuotes}
+                </div>
+                <div>
+                  <strong>Baseline signals:</strong> {s16.baselineSignalCount}/{s16.totalSessions}
+                </div>
+                <div>
+                  <strong>Workarounds captured:</strong> {s16.workaroundCount}/{s16.totalSessions}
+                </div>
+              </div>
+            </div>
+
+            <div style={panelStyle}>
+              <div style={{ fontWeight: 900 }}>Evidence pack checklist (soft)</div>
+              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                <ChecklistLine label={`Sessions (target ≥ ${s16.evidencePack.targetN})`} ok={s16.evidencePack.passSessions} />
+                <ChecklistLine label={`Quotes (target ≥ ${MIN_QUOTES})`} ok={s16.evidencePack.passQuotes} />
+                <ChecklistLine label="At least 1 workaround captured" ok={s16.evidencePack.passWorkaround} />
+                <ChecklistLine label={`Baseline signals (target ≥ ${MIN_BASELINE_SIGNALS})`} ok={s16.evidencePack.passBaselineSignals} />
+                <ChecklistLine label="Consent addressed" ok={s16.evidencePack.passConsent} />
+                {s16.evidencePack.identifiableInfoStored ? (
+                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+                    ⚠ Identifiable info stored is marked TRUE. Make sure this is intentional and justified.
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div style={panelStyle}>
+              <div style={{ fontWeight: 900 }}>Metric mapping counts</div>
+              <div style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>
+                <div>leadMetric1: {s16.metricCounts["leadMetric1"] ?? 0}</div>
+                <div>leadMetric2: {s16.metricCounts["leadMetric2"] ?? 0}</div>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                These keys match the mapping checkboxes in Step 1.6 (pulled from Step 1.4).
+              </div>
+            </div>
+
+            <div style={panelStyle}>
+              <div style={{ fontWeight: 900 }}>Top pains (by frequency)</div>
+              {s16.topPains.length === 0 ? (
+                <div style={{ marginTop: 8, opacity: 0.7 }}>—</div>
+              ) : (
+                <ul style={{ marginTop: 8, paddingLeft: 18 }}>
+                  {s16.topPains.map(([p, n]) => (
+                    <li key={p} style={{ fontSize: 13, opacity: 0.9 }}>
+                      {p} ({n})
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* The actual Gate Review inputs */}
+      <Card>
+        <h3 style={h3}>Gate decision</h3>
 
         <Select
           label="Decision"
@@ -253,54 +541,90 @@ export default function Step110Page() {
           onChange={(v) => setValue({ ...value, decision: v as GateDecision })}
           options={[
             { value: "go", label: "Go" },
-            { value: "iterate", label: "One-iteration" },
+            { value: "one-iteration", label: "One-iteration" },
             { value: "stop", label: "Stop" },
           ]}
         />
 
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
+          <strong>Score (0–10 each):</strong> total {totalScore}/50
+        </div>
+
+        <div style={scoreGridStyle}>
+          <ScoreSelect
+            label="Evidence quality"
+            value={value.evidenceQuality}
+            onChange={(n) => setValue({ ...value, evidenceQuality: n })}
+          />
+          <ScoreSelect
+            label="Severity"
+            value={value.severity}
+            onChange={(n) => setValue({ ...value, severity: n })}
+          />
+          <ScoreSelect
+            label="Willingness to pay"
+            value={value.willingnessToPay}
+            onChange={(n) => setValue({ ...value, willingnessToPay: n })}
+          />
+          <ScoreSelect
+            label="Feasibility"
+            value={value.feasibility}
+            onChange={(n) => setValue({ ...value, feasibility: n })}
+          />
+          <ScoreSelect
+            label="Differentiation"
+            value={value.differentiation}
+            onChange={(n) => setValue({ ...value, differentiation: n })}
+          />
+        </div>
+
+        <h4 style={h4}>Artifacts checklist</h4>
+        <div style={{ display: "grid", gap: 8 }}>
+          {Object.entries(value.artifactsChecklist).map(([k, checked]) => (
+            <CheckboxRow
+              key={k}
+              label={k.replace(/_/g, " ")}
+              checked={!!checked}
+              onChange={(b) =>
+                setValue({
+                  ...value,
+                  artifactsChecklist: { ...value.artifactsChecklist, [k]: b },
+                })
+              }
+            />
+          ))}
+        </div>
+
         <Area
-          label="Rationale"
+          label="Rationale (cite evidence)"
           value={value.rationale}
           onChange={(v) => setValue({ ...value, rationale: v })}
           placeholder={
-            "Cite evidence. No vibes.\n\n" +
-            "- Top 3 evidence points (quotes/counts/observations):\n" +
-            "  1) ___\n" +
-            "  2) ___\n" +
-            "  3) ___\n\n" +
-            "- What moved vs baseline (Step 1.4 metrics): ___\n" +
-            "- What did NOT move / surprised you: ___\n" +
-            "- Biggest risk still unresolved: ___\n" +
-            "- Why this decision (Go / One-iteration / Stop): ___"
-            }
+            "Write the decision like a reviewer is going to challenge you.\n" +
+            "- What evidence (counts/quotes/artifacts) supports this?\n" +
+            "- What evidence weakens it?\n" +
+            "- Why Go / One-iteration / Stop is justified given the above?"
+          }
+          minH={140}
         />
+
         <Area
-          label="Next actions"
+          label="Next actions (concrete)"
           value={value.nextActions}
           onChange={(v) => setValue({ ...value, nextActions: v })}
           placeholder={
-            "Write actions that a stranger could execute.\n\n" +
-            "If GO:\n" +
-            "- Build/test next smallest version: ___\n" +
-            "- Who/when (dates or next week): ___\n" +
-            "- Success criteria (metric + target): ___\n\n" +
-            "If ONE-ITERATION (≤2 days, single unknown):\n" +
-            "- Unknown to test: ___\n" +
-            "- Test method + sample: ___\n" +
-            "- Pass threshold: ___\n" +
-            "- Fail threshold: ___\n\n" +
-            "If STOP:\n" +
-            "- What you learned: ___\n" +
-            "- What you will NOT do next: ___\n" +
-            "- Where to redirect (new user/problem/segment): ___"
-            }
-
+            "If Go:\n- Build/test ___ by ___\n\n" +
+            "If One-iteration:\n- Test assumption ___ with ___ participants by ___\n- If threshold not met, Stop.\n\n" +
+            "If Stop:\n- Capture learning and park the dossier."
+          }
           minH={140}
         />
       </Card>
     </StepShell>
   );
 }
+
+/* ---------- UI bits ---------- */
 
 function Loading() {
   return (
@@ -321,56 +645,13 @@ function NoDossier() {
 }
 
 function Card({ children }: { children: ReactNode }) {
-  return <div style={{ border: "1px solid #ccc", borderRadius: 12, padding: 16 }}>{children}</div>;
-}
-
-function Divider() {
-  return <div style={{ height: 1, background: "#ddd", margin: "14px 0" }} />;
-}
-
-function ScoreInput(props: { label: string; value: number; onChange: (v: number) => void }) {
-  return (
-    <div>
-      <label style={{ fontWeight: 700 }}>{props.label}</label>
-      <input
-        type="number"
-        min={0}
-        max={10}
-        value={globalThis.Number.isFinite(props.value) ? props.value : 0}
-        onChange={(e) => props.onChange(clamp10(parseInt(e.target.value || "0", 10)))}
-        style={inputStyle}
-      />
-    </div>
-  );
-}
-
-function clamp10(n: number) {
-  if (!globalThis.Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(10, n));
-}
-
-function Check(props: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        border: "1px solid #ddd",
-        borderRadius: 12,
-        padding: 10,
-      }}
-    >
-      <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} />
-      <span style={{ fontWeight: 700 }}>{props.label}</span>
-    </label>
-  );
+  return <div style={{ border: "1px solid #ccc", borderRadius: 12, padding: 16, marginTop: 14 }}>{children}</div>;
 }
 
 function Select(props: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
   return (
     <div style={{ marginBottom: 12 }}>
-      <label style={{ fontWeight: 700 }}>{props.label}</label>
+      <label style={{ fontWeight: 700, display: "block" }}>{props.label}</label>
       <select value={props.value} onChange={(e) => props.onChange(e.target.value)} style={selectStyle}>
         {props.options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -382,10 +663,29 @@ function Select(props: { label: string; value: string; onChange: (v: string) => 
   );
 }
 
+function ScoreSelect(props: { label: string; value: number; onChange: (n: number) => void }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ fontWeight: 800, display: "block", fontSize: 12, opacity: 0.9 }}>{props.label}</label>
+      <select
+        value={String(props.value ?? 0)}
+        onChange={(e) => props.onChange(parseInt(e.target.value, 10))}
+        style={selectStyle}
+      >
+        {Array.from({ length: 11 }).map((_, i) => (
+          <option key={i} value={String(i)}>
+            {i}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function Area(props: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; minH?: number }) {
   return (
     <div style={{ marginBottom: 12 }}>
-      <label style={{ fontWeight: 700 }}>{props.label}</label>
+      <label style={{ fontWeight: 700, display: "block" }}>{props.label}</label>
       <textarea
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}
@@ -396,25 +696,63 @@ function Area(props: { label: string; value: string; onChange: (v: string) => vo
   );
 }
 
-const btnStyle: CSSProperties = {
-  padding: "8px 10px",
-  border: "1px solid #ccc",
-  borderRadius: 10,
-  fontWeight: 700,
-  background: "transparent",
-  cursor: "pointer",
-};
+function CheckboxRow(props: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+      <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} style={{ width: 18, height: 18 }} />
+      <span style={{ fontSize: 13, opacity: 0.9 }}>{props.label}</span>
+    </label>
+  );
+}
 
-const inputStyle: CSSProperties = {
-  marginTop: 8,
-  width: "100%",
-  border: "1px solid #ccc",
+function ChecklistLine(props: { label: string; ok: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, opacity: 0.9 }}>
+      <span style={{ fontWeight: 900 }}>{props.ok ? "✅" : "⬜"}</span>
+      <span>{props.label}</span>
+    </div>
+  );
+}
+
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+/* ---------- styles ---------- */
+
+const h3: CSSProperties = { marginTop: 0, marginBottom: 10, fontSize: 16, fontWeight: 800 };
+const h4: CSSProperties = { marginTop: 14, marginBottom: 8, fontSize: 14, fontWeight: 900, opacity: 0.9 };
+
+const panelStyle: CSSProperties = {
+  border: "1px solid #ddd",
   borderRadius: 12,
   padding: 12,
-  fontFamily: "system-ui",
-  background: "transparent",
-  color: "inherit",
-  boxSizing: "border-box",
+};
+
+const metaLine: CSSProperties = {
+  marginTop: 6,
+  fontSize: 12,
+  opacity: 0.7,
+};
+
+const warnText: CSSProperties = {
+  marginTop: 8,
+  fontSize: 13,
+  opacity: 0.9,
+};
+
+const linkStyle: CSSProperties = {
+  textDecoration: "none",
+  fontWeight: 800,
+};
+
+const scoreGridStyle: CSSProperties = {
+  marginTop: 10,
+  display: "grid",
+  gridTemplateColumns: "repeat(5, minmax(140px, 1fr))",
+  gap: 12,
 };
 
 const selectStyle: CSSProperties = {
@@ -443,4 +781,3 @@ function textareaStyle(minHeight: number): CSSProperties {
     boxSizing: "border-box",
   };
 }
-
